@@ -1,0 +1,24 @@
+# Tested on Python 3.11.x. Do not introduce Python 3.12+-only syntax
+# or stdlib features anywhere in this project.
+
+# --- Web framework + Lambda adapter ---
+fastapi>=0.111.0,<1.0.0
+mangum>=0.17.0,<1.0.0
+pydantic>=2.6.0,<3.0.0
+
+# --- HTTP client (Knowledge Base, OpenRouter, Pollinations, Freepik) ---
+requests>=2.32.0,<3.0.0
+
+# --- AWS Bedrock (LLM_PROVIDER=bedrock and/or IMAGE_PROVIDER=aws) ---
+boto3>=1.35.0,<2.0.0
+
+# --- Config ---
+python-dotenv>=1.0.1,<2.0.0
+
+# --- Optional image providers — comment out any you don't use to keep
+# the Lambda deployment package small ---
+huggingface_hub>=0.26.0,<1.0.0   # IMAGE_PROVIDER=huggingface
+Pillow>=10.0.0                    # required by huggingface_hub's image handling
+
+# --- Local development only (not needed inside the Lambda package) ---
+uvicorn[standard]>=0.30.0

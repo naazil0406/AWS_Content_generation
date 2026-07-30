@@ -1,0 +1,88 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  AI Content Generation Service — FastAPI on Lambda behind an HTTP API,
+  via Mangum. Deploy with: sam build && sam deploy --guided
+
+Globals:
+  Function:
+    Timeout: 60
+    MemorySize: 1024
+    Runtime: python3.11
+    Environment:
+      Variables:
+        LOG_LEVEL: INFO
+
+Parameters:
+  KnowledgeBaseUrl:
+    Type: String
+    Description: Base URL of the existing, externally managed Knowledge Base.
+  KnowledgeBaseApiKey:
+    Type: String
+    NoEcho: true
+    Default: ""
+  LlmProvider:
+    Type: String
+    Default: bedrock
+    AllowedValues: [bedrock, openrouter]
+  OpenRouterApiKey:
+    Type: String
+    NoEcho: true
+    Default: ""
+  ImageProvider:
+    Type: String
+    Default: aws
+    AllowedValues: [aws, huggingface, pollinations, freepik]
+  HfToken:
+    Type: String
+    NoEcho: true
+    Default: ""
+  FreepikApiKey:
+    Type: String
+    NoEcho: true
+    Default: ""
+
+Resources:
+  ContentGenerationApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins: ["*"]
+        AllowMethods: ["*"]
+        AllowHeaders: ["*"]
+
+  ContentGenerationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: app.main.handler
+      CodeUri: .
+      Environment:
+        Variables:
+          KNOWLEDGE_BASE_URL: !Ref KnowledgeBaseUrl
+          KNOWLEDGE_BASE_API_KEY: !Ref KnowledgeBaseApiKey
+          LLM_PROVIDER: !Ref LlmProvider
+          OPENROUTER_API_KEY: !Ref OpenRouterApiKey
+          IMAGE_PROVIDER: !Ref ImageProvider
+          HF_TOKEN: !Ref HfToken
+          FREEPIK_API_KEY: !Ref FreepikApiKey
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+                - bedrock:Converse
+              Resource: "*"
+      Events:
+        ApiEvent:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ContentGenerationApi
+            Path: /{proxy+}
+            Method: ANY
+
+Outputs:
+  ApiUrl:
+    Description: Invoke URL for the Content Generation API
+    Value: !Sub "https://${ContentGenerationApi}.execute-api.${AWS::Region}.amazonaws.com"
+  FunctionArn:
+    Value: !GetAtt ContentGenerationFunction.Arn
