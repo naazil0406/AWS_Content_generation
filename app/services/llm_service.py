@@ -1,17 +1,16 @@
 """
-LLM Service — provider-independent abstraction over the Content
-Generation Agent and the Image Prompt Generation Agent.
+LLM Service — abstraction over the Content Generation Agent and the
+Image Prompt Generation Agent, backed by AWS Bedrock.
 
 BaseLLMService defines the two operations the rest of the application
-needs. A concrete provider only has to implement `_call_llm(system, user)
+needs. The concrete provider only has to implement `_call_llm(system, user)
 -> str` — everything else (prompt assembly, output cleanup, validation)
-is shared here, so switching providers is a configuration change
-(settings.LLM_PROVIDER), never a business-logic change.
+is shared here.
 
-Two transports are included: OpenRouterLLMService (chat-completions API)
-and BedrockLLMService (AWS Bedrock Converse API). Adding a third provider
-means adding one more class with a `_call_llm` method — nothing else in
-the application changes.
+One transport is included: BedrockLLMService, over AWS Bedrock's
+Converse API. It works across every Bedrock-hosted model family (Nova,
+Claude, Llama, Mistral, ...) without a code change — only the model ID
+(settings.CONTENT_MODEL / settings.IMAGE_PROMPT_MODEL) changes.
 """
 
 import json
@@ -19,13 +18,9 @@ import logging
 import re
 from typing import List, Optional
 
-import requests
-
 from app.config import settings
 
 logger = logging.getLogger(__name__)
-
-OPENROUTER_CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 
 def _strip_code_fences(text: str) -> str:
@@ -37,7 +32,7 @@ def _strip_code_fences(text: str) -> str:
 
 
 class BaseLLMService:
-    """Base class for any LLM transport (OpenRouter, Bedrock, ...).
+    """Base class for any LLM transport.
 
     A subclass only needs to implement _call_llm(system_prompt,
     user_prompt) -> str.
@@ -137,69 +132,6 @@ class BaseLLMService:
         }
 
 
-class OpenRouterLLMService(BaseLLMService):
-    """LLM transport over OpenRouter's chat-completions API."""
-
-    def __init__(
-        self,
-        api_key: str,
-        model: str,
-        max_tokens: int,
-        temperature: float,
-        base_url: str = OPENROUTER_CHAT_COMPLETIONS_URL,
-        site_url: str = "",
-        site_name: str = "",
-        timeout: int = 90,
-    ):
-        if not api_key:
-            raise ValueError("OPENROUTER_API_KEY is required when LLM_PROVIDER='openrouter'.")
-
-        self.model = model
-        self.max_tokens = max_tokens
-        self.temperature = temperature
-        self.base_url = base_url
-        self.timeout = timeout
-
-        self.headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
-        if site_url:
-            self.headers["HTTP-Referer"] = site_url
-        if site_name:
-            self.headers["X-Title"] = site_name
-
-    def _call_llm(self, system_prompt: str, user_prompt: str) -> str:
-        logger.info(
-            "Calling OpenRouter model '%s' (system=%d chars, user=%d chars).",
-            self.model, len(system_prompt), len(user_prompt),
-        )
-        payload = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "max_tokens": self.max_tokens,
-            "temperature": self.temperature,
-        }
-        response = requests.post(
-            self.base_url, headers=self.headers, json=payload, timeout=self.timeout
-        )
-        if not response.ok:
-            raise RuntimeError(f"{response.status_code} error from OpenRouter: {response.text[:500]}")
-        response.raise_for_status()
-
-        data = response.json()
-        choices = data.get("choices", [])
-        if not choices:
-            raise RuntimeError("OpenRouter returned no choices.")
-        content = choices[0].get("message", {}).get("content", "").strip()
-        if not content:
-            raise RuntimeError("OpenRouter returned an empty response.")
-        return content
-
-
 class BedrockLLMService(BaseLLMService):
     """LLM transport over AWS Bedrock's unified Converse API. Works
     across every Bedrock-hosted model family (Nova, Claude, Llama,
@@ -215,7 +147,7 @@ class BedrockLLMService(BaseLLMService):
         aws_access_key_id: str = "",
         aws_secret_access_key: str = "",
     ):
-        import boto3  # local import: keeps boto3 optional if only OpenRouter is used
+        import boto3
 
         self.model = model
         self.max_tokens = max_tokens
@@ -256,18 +188,7 @@ class BedrockLLMService(BaseLLMService):
 
 
 def get_content_llm() -> BaseLLMService:
-    """Factory for the Content Generation Agent's LLM. Provider chosen
-    entirely by settings.LLM_PROVIDER — no code change needed to switch.
-    """
-    if settings.LLM_PROVIDER == "openrouter":
-        return OpenRouterLLMService(
-            api_key=settings.OPENROUTER_API_KEY,
-            model=settings.OPENROUTER_MODEL,
-            max_tokens=settings.CONTENT_MAX_TOKENS,
-            temperature=settings.CONTENT_TEMPERATURE,
-            site_url=settings.OPENROUTER_SITE_URL,
-            site_name=settings.OPENROUTER_SITE_NAME,
-        )
+    """Factory for the Content Generation Agent's LLM (AWS Bedrock)."""
     return BedrockLLMService(
         model=settings.CONTENT_MODEL,
         max_tokens=settings.CONTENT_MAX_TOKENS,
@@ -279,17 +200,7 @@ def get_content_llm() -> BaseLLMService:
 
 
 def get_image_prompt_llm() -> BaseLLMService:
-    """Factory for the Image Prompt Generation Agent's LLM. Same
-    provider switch as get_content_llm(), independently configurable."""
-    if settings.LLM_PROVIDER == "openrouter":
-        return OpenRouterLLMService(
-            api_key=settings.OPENROUTER_API_KEY,
-            model=settings.OPENROUTER_MODEL,
-            max_tokens=settings.IMAGE_PROMPT_MAX_TOKENS,
-            temperature=settings.IMAGE_PROMPT_TEMPERATURE,
-            site_url=settings.OPENROUTER_SITE_URL,
-            site_name=settings.OPENROUTER_SITE_NAME,
-        )
+    """Factory for the Image Prompt Generation Agent's LLM (AWS Bedrock)."""
     return BedrockLLMService(
         model=settings.IMAGE_PROMPT_MODEL,
         max_tokens=settings.IMAGE_PROMPT_MAX_TOKENS,

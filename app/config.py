@@ -38,17 +38,11 @@ class Settings:
     )
     KNOWLEDGE_BASE_TOP_K: int = int(os.getenv("KNOWLEDGE_BASE_TOP_K", "10"))
 
-    # --- LLM provider switch: "openrouter" or "bedrock" ---
-    LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "bedrock").strip().lower()
+    # --- LLM provider: AWS Bedrock (only supported provider) ---
+    LLM_PROVIDER: str = "bedrock"
     BEDROCK_REGION: str = os.getenv("BEDROCK_REGION", os.getenv("AWS_REGION", "us-east-1"))
     AWS_ACCESS_KEY_ID: str = os.getenv("AWS_ACCESS_KEY_ID", "").strip()
     AWS_SECRET_ACCESS_KEY: str = os.getenv("AWS_SECRET_ACCESS_KEY", "").strip()
-
-    # --- OpenRouter (optional alternative LLM transport) ---
-    OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
-    OPENROUTER_MODEL: str = os.getenv("OPENROUTER_MODEL", "qwen/qwen-2.5-72b-instruct")
-    OPENROUTER_SITE_URL: str = os.getenv("OPENROUTER_SITE_URL", "")
-    OPENROUTER_SITE_NAME: str = os.getenv("OPENROUTER_SITE_NAME", "")
 
     # --- Content Generation Agent (structured learner-facing content) ---
     CONTENT_MODEL: str = os.getenv("CONTENT_MODEL", "amazon.nova-micro-v1:0")
@@ -61,29 +55,24 @@ class Settings:
     IMAGE_PROMPT_TEMPERATURE: float = float(os.getenv("IMAGE_PROMPT_TEMPERATURE", "0.3"))
 
     # --- Image Generation Service ---
-    # "huggingface" (FLUX.1-dev), "pollinations" (free, no key), "freepik"
-    # (Freepik Mystic/Flux), or "aws" (Bedrock Nova Canvas). Changing
-    # providers is a config-only change — see app/services/image_generation_service.py.
-    IMAGE_PROVIDER: str = os.getenv("IMAGE_PROVIDER", "aws")
+    # "freepik" (Freepik Mystic/Flux, default), "pollinations" (free, no
+    # key), or "aws" (Bedrock Nova Canvas). Changing providers is a
+    # config-only change — see app/services/image_generation_service.py.
+    IMAGE_PROVIDER: str = os.getenv("IMAGE_PROVIDER", "freepik")
     IMAGE_VARIATIONS_COUNT: int = int(os.getenv("IMAGE_VARIATIONS_COUNT", "3"))
     IMAGE_WIDTH: int = int(os.getenv("IMAGE_WIDTH", "1024"))
     IMAGE_HEIGHT: int = int(os.getenv("IMAGE_HEIGHT", "1024"))
 
-    # Separate AWS account/region for the image pipeline, if desired. Falls
-    # back to the main AWS_* creds/region above when left blank, so one
-    # shared account still works out of the box.
+    # Separate AWS account/region for the image pipeline, if desired (only
+    # used when IMAGE_PROVIDER=aws). Falls back to the main AWS_* creds/
+    # region above when left blank, so one shared account still works out
+    # of the box.
     AWS_IMAGE_ACCESS_KEY_ID: str = (os.getenv("AWS_IMAGE_ACCESS_KEY_ID", "").strip() or os.getenv("AWS_ACCESS_KEY_ID", "").strip())
     AWS_IMAGE_SECRET_ACCESS_KEY: str = (os.getenv("AWS_IMAGE_SECRET_ACCESS_KEY", "").strip() or os.getenv("AWS_SECRET_ACCESS_KEY", "").strip())
     AWS_IMAGE_REGION: str = os.getenv("AWS_IMAGE_REGION", "").strip() or os.getenv("BEDROCK_REGION", os.getenv("AWS_REGION", "us-east-1"))
     BEDROCK_IMAGE_GEN_MODEL: str = os.getenv("BEDROCK_IMAGE_GEN_MODEL", "amazon.nova-canvas-v1:0")
     IMAGE_QUALITY: str = os.getenv("IMAGE_QUALITY", "standard")
     IMAGE_CFG_SCALE: float = float(os.getenv("IMAGE_CFG_SCALE", "8.0"))
-
-    HF_TOKEN: str = os.getenv("HF_TOKEN", "")
-    HF_FLUX_MODEL: str = os.getenv("HF_FLUX_MODEL", "black-forest-labs/FLUX.1-dev")
-    HF_INFERENCE_PROVIDER: str = os.getenv("HF_INFERENCE_PROVIDER", "auto")
-    FLUX_NUM_INFERENCE_STEPS: int = int(os.getenv("FLUX_NUM_INFERENCE_STEPS", "45"))
-    FLUX_GUIDANCE_SCALE: float = float(os.getenv("FLUX_GUIDANCE_SCALE", "7.5"))
 
     POLLINATIONS_MODEL: str = os.getenv("POLLINATIONS_MODEL", "flux")
     POLLINATIONS_BASE_URL: str = os.getenv("POLLINATIONS_BASE_URL", "https://image.pollinations.ai/prompt")

@@ -8,10 +8,9 @@ one settings.IMAGE_PROVIDER selects, and `generate_variations()` doesn't
 need to know which provider it's talking to. Adding a new provider means
 adding one class with a `generate_image` method — no other code changes.
 
-Four transports are included:
-  - HuggingFaceFluxService: FLUX.1-dev via Hugging Face Inference Providers.
+Three transports are included:
+  - FreepikImageService: Freepik Mystic / Flux / Seedream endpoints (default).
   - PollinationsImageService: free, no API key required.
-  - FreepikImageService: Freepik Mystic / Flux / Seedream endpoints.
   - NovaCanvasService: AWS Bedrock Nova Canvas.
 """
 
@@ -29,57 +28,6 @@ import requests
 from app.config import settings
 
 logger = logging.getLogger(__name__)
-
-
-class HuggingFaceFluxService:
-    """Transport over FLUX.1-dev via the huggingface_hub InferenceClient."""
-
-    def __init__(
-        self,
-        api_token: str,
-        model: str,
-        provider: str,
-        width: int,
-        height: int,
-        num_inference_steps: int,
-        guidance_scale: float,
-    ):
-        from huggingface_hub import InferenceClient
-
-        if not api_token:
-            raise RuntimeError("HF_TOKEN is not set — required when IMAGE_PROVIDER='huggingface'.")
-        self.model = model
-        self.width = width
-        self.height = height
-        self.num_inference_steps = num_inference_steps
-        self.guidance_scale = guidance_scale
-        self.client = InferenceClient(provider=provider, api_key=api_token)
-
-    def generate_image(self, prompt: str, negative_prompt: str = "") -> bytes:
-        from huggingface_hub.errors import HfHubHTTPError
-
-        kwargs = {
-            "model": self.model,
-            "width": self.width,
-            "height": self.height,
-            "num_inference_steps": self.num_inference_steps,
-            "guidance_scale": self.guidance_scale,
-        }
-        if negative_prompt:
-            kwargs["negative_prompt"] = negative_prompt
-
-        logger.info("Calling FLUX.1-dev model '%s' (prompt=%d chars).", self.model, len(prompt))
-        try:
-            image = self.client.text_to_image(prompt, **kwargs)
-        except HfHubHTTPError as exc:
-            raise RuntimeError(f"Hugging Face request failed for model '{self.model}': {exc}") from exc
-
-        if image is None:
-            raise RuntimeError("Hugging Face returned no image data.")
-
-        buffer = io.BytesIO()
-        image.save(buffer, format="PNG")
-        return buffer.getvalue()
 
 
 class PollinationsImageService:
@@ -288,10 +236,10 @@ class NovaCanvasService:
 
 
 def get_image_gen_service():
-    """Factory for the configured image-rendering backend. All four
+    """Factory for the configured image-rendering backend. All three
     expose the same `.generate_image(prompt, negative_prompt="") -> bytes`
     interface. Provider chosen entirely by settings.IMAGE_PROVIDER — no
-    code change needed to switch.
+    code change needed to switch. Defaults to Freepik.
     """
     if settings.IMAGE_PROVIDER == "aws":
         return NovaCanvasService(
@@ -311,25 +259,15 @@ def get_image_gen_service():
             width=settings.IMAGE_WIDTH,
             height=settings.IMAGE_HEIGHT,
         )
-    if settings.IMAGE_PROVIDER == "freepik":
-        return FreepikImageService(
-            api_key=settings.FREEPIK_API_KEY,
-            model=settings.FREEPIK_MODEL,
-            resolution=settings.FREEPIK_RESOLUTION,
-            width=settings.IMAGE_WIDTH,
-            height=settings.IMAGE_HEIGHT,
-            filter_nsfw=settings.FREEPIK_FILTER_NSFW,
-            poll_interval=settings.FREEPIK_POLL_INTERVAL,
-            poll_timeout=settings.FREEPIK_POLL_TIMEOUT,
-        )
-    return HuggingFaceFluxService(
-        api_token=settings.HF_TOKEN,
-        model=settings.HF_FLUX_MODEL,
-        provider=settings.HF_INFERENCE_PROVIDER,
+    return FreepikImageService(
+        api_key=settings.FREEPIK_API_KEY,
+        model=settings.FREEPIK_MODEL,
+        resolution=settings.FREEPIK_RESOLUTION,
         width=settings.IMAGE_WIDTH,
         height=settings.IMAGE_HEIGHT,
-        num_inference_steps=settings.FLUX_NUM_INFERENCE_STEPS,
-        guidance_scale=settings.FLUX_GUIDANCE_SCALE,
+        filter_nsfw=settings.FREEPIK_FILTER_NSFW,
+        poll_interval=settings.FREEPIK_POLL_INTERVAL,
+        poll_timeout=settings.FREEPIK_POLL_TIMEOUT,
     )
 
 

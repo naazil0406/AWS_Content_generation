@@ -23,22 +23,10 @@ Parameters:
     Type: String
     Default: us-east-1
     Description: Region the Bedrock Knowledge Base lives in.
-  LlmProvider:
-    Type: String
-    Default: bedrock
-    AllowedValues: [bedrock, openrouter]
-  OpenRouterApiKey:
-    Type: String
-    NoEcho: true
-    Default: ""
   ImageProvider:
     Type: String
-    Default: aws
-    AllowedValues: [aws, huggingface, pollinations, freepik]
-  HfToken:
-    Type: String
-    NoEcho: true
-    Default: ""
+    Default: freepik
+    AllowedValues: [freepik, aws, pollinations]
   FreepikApiKey:
     Type: String
     NoEcho: true
@@ -63,10 +51,7 @@ Resources:
         Variables:
           KNOWLEDGE_BASE_ID: !Ref KnowledgeBaseId
           KNOWLEDGE_BASE_REGION: !Ref KnowledgeBaseRegion
-          LLM_PROVIDER: !Ref LlmProvider
-          OPENROUTER_API_KEY: !Ref OpenRouterApiKey
           IMAGE_PROVIDER: !Ref ImageProvider
-          HF_TOKEN: !Ref HfToken
           FREEPIK_API_KEY: !Ref FreepikApiKey
       Policies:
         - Statement:
