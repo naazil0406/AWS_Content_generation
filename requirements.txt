@@ -18,7 +18,7 @@ python-dotenv>=1.0.1,<2.0.0
 # --- Optional image providers — comment out any you don't use to keep
 # the Lambda deployment package small ---
 huggingface_hub>=0.26.0,<1.0.0   # IMAGE_PROVIDER=huggingface
-Pillow>=10.0.0                    # required by huggingface_hub's image handling
+Pillow==11.3.0                # required by huggingface_hub's image handling
 
 # --- Local development only (not needed inside the Lambda package) ---
 uvicorn[standard]>=0.30.0

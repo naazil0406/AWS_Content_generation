@@ -14,13 +14,15 @@ Globals:
         LOG_LEVEL: INFO
 
 Parameters:
-  KnowledgeBaseUrl:
+  KnowledgeBaseId:
     Type: String
-    Description: Base URL of the existing, externally managed Knowledge Base.
-  KnowledgeBaseApiKey:
+    Description: >
+      ID of the existing Amazon Bedrock Knowledge Base (Bedrock console ->
+      Knowledge Bases -> your KB -> Knowledge base overview). Not a URL.
+  KnowledgeBaseRegion:
     Type: String
-    NoEcho: true
-    Default: ""
+    Default: us-east-1
+    Description: Region the Bedrock Knowledge Base lives in.
   LlmProvider:
     Type: String
     Default: bedrock
@@ -54,12 +56,13 @@ Resources:
   ContentGenerationFunction:
     Type: AWS::Serverless::Function
     Properties:
+      FunctionName: content_generation
       Handler: app.main.handler
       CodeUri: .
       Environment:
         Variables:
-          KNOWLEDGE_BASE_URL: !Ref KnowledgeBaseUrl
-          KNOWLEDGE_BASE_API_KEY: !Ref KnowledgeBaseApiKey
+          KNOWLEDGE_BASE_ID: !Ref KnowledgeBaseId
+          KNOWLEDGE_BASE_REGION: !Ref KnowledgeBaseRegion
           LLM_PROVIDER: !Ref LlmProvider
           OPENROUTER_API_KEY: !Ref OpenRouterApiKey
           IMAGE_PROVIDER: !Ref ImageProvider
@@ -72,6 +75,10 @@ Resources:
                 - bedrock:InvokeModel
                 - bedrock:Converse
               Resource: "*"
+            - Effect: Allow
+              Action:
+                - bedrock:Retrieve
+              Resource: !Sub "arn:aws:bedrock:${KnowledgeBaseRegion}:${AWS::AccountId}:knowledge-base/${KnowledgeBaseId}"
       Events:
         ApiEvent:
           Type: HttpApi
@@ -79,6 +86,14 @@ Resources:
             ApiId: !Ref ContentGenerationApi
             Path: /{proxy+}
             Method: ANY
+        RootEvent:
+          # /{proxy+} does not match the bare root path — this catches
+          # GET / so the bundled frontend/index.html is served there.
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ContentGenerationApi
+            Path: /
+            Method: GET
 
 Outputs:
   ApiUrl:
@@ -86,3 +101,6 @@ Outputs:
     Value: !Sub "https://${ContentGenerationApi}.execute-api.${AWS::Region}.amazonaws.com"
   FunctionArn:
     Value: !GetAtt ContentGenerationFunction.Arn
+  FunctionName:
+    Description: The Lambda function's actual name in AWS
+    Value: !Ref ContentGenerationFunction

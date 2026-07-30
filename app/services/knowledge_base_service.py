@@ -1,24 +1,28 @@
 """
-Knowledge Base Service — a thin client over the existing, externally
-managed Knowledge Base.
+Knowledge Base Service — a thin client over an Amazon Bedrock Knowledge
+Base.
 
-This service does NOT chunk, embed, or index anything. It does not talk
-to a vector database. All of that already exists elsewhere and is
-someone else's operational responsibility. This module's entire job is:
-take a query string, call the Knowledge Base's retrieval endpoint, and
-hand back whatever context chunks it returns.
+This service does NOT chunk, embed, or index anything. It does not manage
+a vector database directly. All of that already exists inside the Bedrock
+Knowledge Base and is someone else's operational responsibility. This
+module's entire job is: take a query string, call the Knowledge Base's
+`retrieve` API via bedrock-agent-runtime, and hand back whatever context
+chunks it returns.
 
-If your Knowledge Base exposes a different contract (a different path,
-a different response shape, or an SDK instead of raw HTTP), change only
-this file — nothing else in the application needs to know how retrieval
-actually happens.
+Bedrock Knowledge Bases are addressed by KNOWLEDGE_BASE_ID (found in the
+Bedrock console), not a URL — there is no HTTP endpoint to call directly.
+
+If you ever swap to a different, externally hosted Knowledge Base that
+exposes its own REST contract instead, change only this file — nothing
+else in the application needs to know how retrieval actually happens.
 """
 
 import logging
 import time
 from typing import List, Optional
 
-import requests
+import boto3
+from botocore.exceptions import BotoCoreError, ClientError
 
 from app.config import settings
 
@@ -31,71 +35,75 @@ class KnowledgeBaseError(RuntimeError):
 
 
 class KnowledgeBaseService:
-    """Retrieves relevant context chunks from the external Knowledge Base.
+    """Retrieves relevant context chunks from an Amazon Bedrock
+    Knowledge Base.
 
-    Expects the Knowledge Base to expose a JSON retrieval endpoint that
-    accepts {"query": str, "top_k": int} and returns
-    {"chunks": [{"text": str, "source": str, ...}, ...]}. Adjust
-    `_build_request` / `_parse_response` below if your Knowledge Base's
-    contract differs — the rest of the app only depends on `retrieve()`.
+    Calls `bedrock-agent-runtime`'s `retrieve` API with
+    `knowledgeBaseId=<KNOWLEDGE_BASE_ID>` and a `retrievalQuery`, and
+    returns a list of {"text": str, "source": str} dicts. Adjust
+    `_parse_response` below if you need additional fields (e.g. score,
+    metadata) — the rest of the app only depends on `retrieve()`.
     """
 
     def __init__(
         self,
-        base_url: str = settings.KNOWLEDGE_BASE_URL,
-        api_key: str = settings.KNOWLEDGE_BASE_API_KEY,
+        kb_id: str = settings.KNOWLEDGE_BASE_ID,
+        region: str = settings.KNOWLEDGE_BASE_REGION,
         top_k: int = settings.KNOWLEDGE_BASE_TOP_K,
-        timeout: int = settings.KNOWLEDGE_BASE_TIMEOUT,
         max_retries: int = settings.HTTP_MAX_RETRIES,
         backoff_seconds: float = settings.HTTP_BACKOFF_SECONDS,
     ):
-        if not base_url:
+        if not kb_id:
             raise KnowledgeBaseError(
-                "KNOWLEDGE_BASE_URL is not configured. Set it to the "
-                "existing Knowledge Base's retrieval endpoint."
+                "KNOWLEDGE_BASE_ID is not configured. Set it to your "
+                "Bedrock Knowledge Base's ID (Bedrock console -> "
+                "Knowledge Bases -> your KB -> Knowledge base overview)."
             )
-        self.base_url = base_url.rstrip("/")
-        self.api_key = api_key
+        self.kb_id = kb_id
+        self.region = region
         self.top_k = top_k
-        self.timeout = timeout
         self.max_retries = max_retries
         self.backoff_seconds = backoff_seconds
+        self._client = None  # lazy init so import-time never touches AWS
 
-    def _headers(self) -> dict:
-        headers = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
-        return headers
+    @property
+    def client(self):
+        if self._client is None:
+            client_kwargs = {"region_name": self.region}
+            if settings.AWS_ACCESS_KEY_ID and settings.AWS_SECRET_ACCESS_KEY:
+                client_kwargs["aws_access_key_id"] = settings.AWS_ACCESS_KEY_ID
+                client_kwargs["aws_secret_access_key"] = settings.AWS_SECRET_ACCESS_KEY
+            self._client = boto3.client("bedrock-agent-runtime", **client_kwargs)
+        return self._client
 
     def retrieve(self, query: str, top_k: Optional[int] = None) -> List[dict]:
         """Retrieve relevant context chunks for `query` from the
         Knowledge Base. Returns a list of {"text": str, "source": str}
         dicts (empty list if the Knowledge Base finds nothing relevant).
 
-        Retries transient failures (timeouts, 5xx) up to
-        settings.HTTP_MAX_RETRIES times with exponential backoff before
-        raising KnowledgeBaseError.
+        Retries transient failures up to settings.HTTP_MAX_RETRIES times
+        with exponential backoff before raising KnowledgeBaseError.
         """
         query = (query or "").strip()
         if not query:
             raise ValueError("query must not be empty.")
 
-        payload = {"query": query, "top_k": top_k or self.top_k}
-        url = f"{self.base_url}/retrieve"
+        number_of_results = top_k or self.top_k
 
         last_exc: Optional[Exception] = None
         for attempt in range(1, self.max_retries + 1):
             try:
-                response = requests.post(
-                    url, headers=self._headers(), json=payload, timeout=self.timeout
+                response = self.client.retrieve(
+                    knowledgeBaseId=self.kb_id,
+                    retrievalQuery={"text": query},
+                    retrievalConfiguration={
+                        "vectorSearchConfiguration": {
+                            "numberOfResults": number_of_results
+                        }
+                    },
                 )
-                if response.status_code >= 500:
-                    raise KnowledgeBaseError(
-                        f"Knowledge Base returned {response.status_code}: {response.text[:300]}"
-                    )
-                response.raise_for_status()
-                return self._parse_response(response.json())
-            except (requests.RequestException, KnowledgeBaseError, ValueError) as exc:
+                return self._parse_response(response)
+            except (ClientError, BotoCoreError) as exc:
                 last_exc = exc
                 logger.warning(
                     "Knowledge Base retrieval attempt %d/%d failed: %s",
@@ -109,21 +117,27 @@ class KnowledgeBaseService:
         ) from last_exc
 
     @staticmethod
-    def _parse_response(data: dict) -> List[dict]:
-        chunks = data.get("chunks", data.get("results", []))
-        if not isinstance(chunks, list):
+    def _parse_response(response: dict) -> List[dict]:
+        results = response.get("retrievalResults", [])
+        if not isinstance(results, list):
             raise KnowledgeBaseError(
-                "Knowledge Base response did not contain a 'chunks' list."
+                "Knowledge Base response did not contain a 'retrievalResults' list."
             )
         parsed = []
-        for chunk in chunks:
-            if isinstance(chunk, str):
-                parsed.append({"text": chunk, "source": ""})
-            elif isinstance(chunk, dict):
-                parsed.append(
-                    {
-                        "text": chunk.get("text") or chunk.get("content") or "",
-                        "source": chunk.get("source") or chunk.get("filename") or "",
-                    }
-                )
-        return [c for c in parsed if c["text"].strip()]
+        for result in results:
+            content = result.get("content") or {}
+            text = content.get("text", "")
+
+            location = result.get("location") or {}
+            source = (
+                (location.get("s3Location") or {}).get("uri")
+                or (location.get("webLocation") or {}).get("url")
+                or (location.get("confluenceLocation") or {}).get("url")
+                or (location.get("salesforceLocation") or {}).get("url")
+                or (location.get("sharePointLocation") or {}).get("url")
+                or ""
+            )
+
+            if text and text.strip():
+                parsed.append({"text": text, "source": source})
+        return parsed

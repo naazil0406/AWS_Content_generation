@@ -29,14 +29,14 @@ def setup_logging(log_level: str = "INFO") -> None:
 
 @dataclass(frozen=True)
 class Settings:
-    # --- Knowledge Base (external managed dependency) ---
-    # The KB already exists and owns its own chunking/embedding/vector
-    # store. This service only calls it over HTTP and consumes whatever
-    # context chunks it returns.
-    KNOWLEDGE_BASE_URL: str = os.getenv("KNOWLEDGE_BASE_URL", "")
-    KNOWLEDGE_BASE_API_KEY: str = os.getenv("KNOWLEDGE_BASE_API_KEY", "")
+    # --- Knowledge Base (Amazon Bedrock Knowledge Base) ---
+    # Bedrock Knowledge Bases are addressed by ID, not a URL. Retrieval
+    # happens through the bedrock-agent-runtime SDK client, not raw HTTP.
+    KNOWLEDGE_BASE_ID: str = os.getenv("KNOWLEDGE_BASE_ID", "")
+    KNOWLEDGE_BASE_REGION: str = os.getenv(
+        "KNOWLEDGE_BASE_REGION", os.getenv("BEDROCK_REGION", os.getenv("AWS_REGION", "us-east-1"))
+    )
     KNOWLEDGE_BASE_TOP_K: int = int(os.getenv("KNOWLEDGE_BASE_TOP_K", "10"))
-    KNOWLEDGE_BASE_TIMEOUT: int = int(os.getenv("KNOWLEDGE_BASE_TIMEOUT", "30"))
 
     # --- LLM provider switch: "openrouter" or "bedrock" ---
     LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "bedrock").strip().lower()

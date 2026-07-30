@@ -1,21 +1,24 @@
 # AI Content Generation Service
 
 A single-responsibility FastAPI service: takes a user prompt, retrieves
-context from an existing Knowledge Base, generates structured AI content,
-generates an optimized image prompt, and renders exactly three image
-variations. Deployable to AWS Lambda via Mangum, or run locally with
-uvicorn.
+context from an Amazon Bedrock Knowledge Base, generates structured AI
+content, generates an optimized image prompt, and renders exactly three
+image variations. Deployable to AWS Lambda via Mangum, or run locally
+with uvicorn. Ships with a bundled static frontend served from the same
+app.
 
 ## Architecture
 
 ```
-User
+User (browser)
+ -> GET /                                        [frontend/index.html]
  -> Amazon API Gateway (HTTP API)
  -> AWS Lambda
  -> Mangum
  -> FastAPI (app/main.py)
- -> POST /api/generate (app/routes/content.py)
-    -> KnowledgeBaseService.retrieve(prompt)        [external KB, HTTP]
+ -> GET  /api/content-types (app/routes/content.py)
+ -> POST /api/generate      (app/routes/content.py)
+    -> KnowledgeBaseService.retrieve(prompt)        [Bedrock Knowledge Base, via boto3]
     -> ContentGenerationEngine.generate()
         -> Content Generation Agent (LLM)           [Bedrock or OpenRouter]
         -> Image Prompt Generation Agent (LLM)      [Bedrock or OpenRouter]
@@ -27,23 +30,29 @@ Both the LLM and the image renderer are provider-independent: swapping
 either is a one-line environment variable change (`LLM_PROVIDER`,
 `IMAGE_PROVIDER`) — no code changes.
 
+The frontend and the API are served from the **same Lambda / same
+origin**, so `frontend/index.html`'s `fetch("/api/...")` calls work with
+zero CORS configuration. See "Frontend" below.
+
 ## Project Structure
 
 ```
 app/
-  main.py                          FastAPI app + Lambda handler (Mangum)
+  main.py                          FastAPI app + Lambda handler (Mangum) + serves frontend/index.html at "/"
   config.py                        Single source of truth for env vars
   routes/
-    content.py                     POST /api/generate
+    content.py                     GET /api/content-types, POST /api/generate
   services/
-    knowledge_base_service.py      Thin client to the external Knowledge Base
+    knowledge_base_service.py      Bedrock Knowledge Base client (bedrock-agent-runtime, via boto3)
     content_generation_engine.py   Core business logic
     prompt_builder.py               Loads prompts/*.txt, builds LLM user turns
     llm_service.py                  Provider-agnostic LLM abstraction
     image_generation_service.py    Provider-agnostic image abstraction
     response_builder.py            Assembles the final API response
   schemas/
-    content.py                     Pydantic request/response models
+    content.py                     Pydantic request/response models + CONTENT_TYPES list
+frontend/
+  index.html                       Static single-page frontend, served at GET /
 prompts/
   content_generation_system.txt    Content Generation Agent system prompt
   image_prompt_system.txt          Image Prompt Generation Agent system prompt
@@ -54,6 +63,21 @@ template.yaml                      AWS SAM deployment template
 
 ## API
 
+### `GET /api/content-types`
+
+Returns the content types the frontend's dropdown populates itself
+from (sourced from `app/schemas/content.py`'s `CONTENT_TYPES`, which
+mirrors the table in `prompts/image_prompt_system.txt`):
+```json
+{
+  "content_types": [
+    "Recall Card", "AI Image", "Infographic", "Flashcard", "Scenario",
+    "Spot the Mistake Challenge", "Daily Quiz", "Fun Fact",
+    "Reflection Question", "Safety / Best Practice Tip", "Daily Tip"
+  ]
+}
+```
+
 ### `POST /api/generate`
 
 Request:
@@ -63,11 +87,6 @@ Request:
   "content_type": "Safety / Best Practice Tip"
 }
 ```
-
-`content_type` is one of: `Recall Card`, `AI Image`, `Infographic`,
-`Flashcard`, `Scenario`, `Spot the Mistake Challenge`, `Daily Quiz`,
-`Fun Fact`, `Reflection Question`, `Safety / Best Practice Tip`,
-`Daily Tip`.
 
 Response:
 ```json
@@ -87,6 +106,12 @@ Response:
 ### `GET /api/health`
 
 Returns `{"status": "ok"}` — used for Lambda warm-up checks / uptime monitors.
+
+### `GET /`
+
+Serves `frontend/index.html` directly (same origin as the API above, so
+its relative `fetch("/api/...")` calls resolve correctly with no CORS
+setup required).
 
 ## Design note: Daily Tip focus, avoid_repeating, negative-prompt fallback
 
@@ -117,26 +142,51 @@ The spec asks for one optimized image prompt and three image variations.
 This service generates **one** prompt via the Image Prompt Generation
 Agent, then calls the configured image provider **three times** with
 that same prompt. Every supported provider is stochastic, so three calls
-produce three distinct images rather than three copies. If you'd rather
-have three *prompt* variations (one call each) instead of three renders
-of one prompt, that's a small change confined to
-`content_generation_engine.py` + `image_generation_service.py` — let me
-know if you want that instead.
+produce three distinct images rather than three copies.
+
+## Frontend
+
+`frontend/index.html` is a plain HTML/CSS/JS single-page app — no build
+step, no npm, nothing to compile. It's served directly by FastAPI at
+`GET /` (see `app/main.py`) and bundled into the Lambda package
+automatically, since `template.yaml`'s `CodeUri: .` packages the whole
+repo root.
+
+The page's JS uses `const API = "";` — every `fetch` call is a relative
+path (e.g. `fetch("/api/content-types")`). That only resolves correctly
+when the page and the API share an origin, which is exactly what serving
+it from the same FastAPI app guarantees. If you ever move the frontend
+to a separate static host (S3/CloudFront), you'd need to either set
+`API` to the full API Gateway URL or route both through one CloudFront
+distribution.
 
 ---
 
 ## Local Development Guide
 
+**macOS / Linux:**
 ```bash
 python3.11 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # fill in KNOWLEDGE_BASE_URL and your chosen providers
+cp .env.example .env   # fill in KNOWLEDGE_BASE_ID and your chosen providers
 uvicorn app.main:app --reload --port 8000
 ```
 
-Test:
+**Windows (PowerShell):**
+```powershell
+py -3.11 -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+copy .env.example .env   # fill in KNOWLEDGE_BASE_ID and your chosen providers
+uvicorn app.main:app --reload --port 8000
+```
+
+Open `http://127.0.0.1:8000/` in a browser to see the frontend, or test
+the API directly:
 ```bash
+curl http://127.0.0.1:8000/api/content-types
+
 curl -X POST http://localhost:8000/api/generate \
   -H "Content-Type: application/json" \
   -d '{"prompt": "Ladder safety", "content_type": "Daily Tip"}'
@@ -144,113 +194,158 @@ curl -X POST http://localhost:8000/api/generate \
 
 ---
 
-## AWS Deployment Guide
+## AWS Deployment Guide (SAM CLI, no Docker, no git required)
 
-### Phase 1 — AWS Preparation
+`sam build`/`sam deploy` only need Docker if you explicitly pass
+`--use-container` (for compiling packages that need a Linux build
+environment). None of this project's dependencies require that, so
+plain `sam build` works directly against your local Python install.
+Git is not involved anywhere in this flow — SAM zips your local folder
+directly.
+
+### Phase 1 — Install prerequisites (Windows)
+
+```powershell
+winget install Amazon.AWSCLI
+winget install Amazon.SAM-CLI
+```
+If `sam --version` isn't recognized after installing, open a **brand
+new** terminal window (PATH changes don't apply to already-open ones).
+If it's still not found, download the MSI directly from
+https://github.com/aws/aws-sam-cli/releases/latest and run it — this is
+the most reliable install path on Windows.
+
+Then configure AWS credentials:
+```powershell
+aws configure
+```
+
+### Phase 2 — AWS Preparation
 
 1. **IAM Role**: SAM creates this automatically from `template.yaml`'s
-   `Policies` block (grants `bedrock:InvokeModel` / `bedrock:Converse`).
-   If you use a different image/LLM provider that doesn't need AWS, you
-   can remove that policy block.
+   `Policies` block — grants `bedrock:InvokeModel` / `bedrock:Converse`
+   plus `bedrock:Retrieve` scoped to your specific Knowledge Base ARN.
 2. **Enable Bedrock model access** (if `LLM_PROVIDER=bedrock` or
    `IMAGE_PROVIDER=aws`): in the Bedrock console, request access to the
-   Nova model family in your target region.
+   Nova model family in your target region. This is a one-time,
+   manual, account-level step — SAM can't do it for you.
 3. **CloudWatch**: log group is created automatically per Lambda
    function; no manual setup needed. Adjust `LOG_LEVEL` via the
    function's environment variables.
 4. **API Gateway**: defined declaratively in `template.yaml` as an
    `AWS::Serverless::HttpApi` — created on deploy.
 
-### Phase 2 — Application Preparation
+### Phase 3 — Build
 
-```bash
-pip install --target .aws-sam/build/ContentGenerationFunction -r requirements.txt
-```
-(SAM does this for you during `sam build` — see Phase 3.)
-
-Set provider credentials as SAM parameters or in a `samconfig.toml` (see
-below) rather than committing them to source control.
-
-### Phase 3 — Lambda Deployment
-
-```bash
+```powershell
 sam build
+```
+This installs `requirements.txt` locally into `.aws-sam/build/` and
+copies in `app/`, `frontend/`, and `prompts/`. No Docker needed for this
+project's dependencies.
+
+### Phase 4 — Deploy (first time — guided)
+
+```powershell
 sam deploy --guided
 ```
 
-You'll be prompted for the parameters defined in `template.yaml`:
-`KnowledgeBaseUrl`, `KnowledgeBaseApiKey`, `LlmProvider`,
-`OpenRouterApiKey`, `ImageProvider`, `HfToken`, `FreepikApiKey`. SAM
-writes your answers to `samconfig.toml` for repeat deploys.
+You'll be prompted for:
+- **Stack Name** — e.g. `ai-content-generation-service`
+- **AWS Region** — e.g. `us-east-1`
+- `KnowledgeBaseId` — your Bedrock Knowledge Base's **ID**, found in the
+  Bedrock console under Knowledge Bases -> your KB -> Knowledge base
+  overview. **Not a URL.**
+- `KnowledgeBaseRegion` — e.g. `us-east-1`
+- `LlmProvider` — `bedrock` (default) or `openrouter`
+- `OpenRouterApiKey` — leave blank if using bedrock
+- `ImageProvider` — `aws` (default), `huggingface`, `pollinations`, or `freepik`
+- `HfToken` / `FreepikApiKey` — only if using those providers
+- **Confirm changes before deploy** → `Y`
+- **Allow SAM CLI IAM role creation** → `Y`
+- **Save arguments to samconfig.toml** → `Y`
+
+SAM writes your answers to `samconfig.toml`, so every deploy after this
+is just:
+```powershell
+sam build
+sam deploy
+```
 
 Runtime: Python 3.11 (set in `template.yaml`'s `Globals`).
 Timeout: 60s (image generation is the long pole — increase if your
 provider is slow). Memory: 1024MB (raise if Pillow/huggingface_hub
 image decoding needs more headroom).
 
-### Phase 4 — API Gateway
+### Phase 5 — API Gateway + Frontend
 
-Already wired via the `HttpApi` event in `template.yaml` — `sam deploy`
-prints the invoke URL under `Outputs.ApiUrl`. CORS is open (`*`) by
-default; restrict `AllowOrigins` in `template.yaml` before production
-use.
+Already wired via the `HttpApi` events in `template.yaml` — one for
+`/{proxy+}` (all API routes) and one for the bare `/` (the frontend
+page, which `{proxy+}` alone would not match). `sam deploy` prints the
+invoke URL under `Outputs.ApiUrl`. CORS is open (`*`) by default;
+restrict `AllowOrigins` in `template.yaml` before production use.
 
 Test the deployed endpoint:
-```bash
-curl -X POST "$(aws cloudformation describe-stacks --stack-name <your-stack> \
-  --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue" --output text)/api/generate" \
-  -H "Content-Type: application/json" \
-  -d '{"prompt": "Ladder safety", "content_type": "Daily Tip"}'
+```powershell
+$ApiUrl = aws cloudformation describe-stacks --stack-name ai-content-generation-service `
+  --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue" --output text
+
+curl "$ApiUrl/api/health"
+curl "$ApiUrl/api/content-types"
 ```
+Open `$ApiUrl/` directly in a browser to see the frontend live.
 
-### Phase 5 — Knowledge Base Integration
+### Phase 6 — Knowledge Base Integration
 
-Set `KNOWLEDGE_BASE_URL` (and `KNOWLEDGE_BASE_API_KEY` if required) to
-your existing Knowledge Base's retrieval endpoint. `knowledge_base_service.py`
-expects `POST {url}/retrieve` with `{"query": str, "top_k": int}`,
-returning `{"chunks": [{"text": str, "source": str}, ...]}`. If your KB's
-contract differs, only `KnowledgeBaseService._build_request` /
-`_parse_response` need to change.
+Set `KNOWLEDGE_BASE_ID` (and `KNOWLEDGE_BASE_REGION`) to your existing
+Amazon Bedrock Knowledge Base. `knowledge_base_service.py` calls
+`bedrock-agent-runtime`'s `retrieve` API via boto3 — no HTTP endpoint
+or URL involved. If you ever swap to a different, externally hosted
+Knowledge Base with its own REST contract instead, only
+`KnowledgeBaseService.retrieve` / `_parse_response` need to change.
 
-### Phase 6 — LLM Integration
+### Phase 7 — LLM Integration
 
 Set `LLM_PROVIDER=bedrock` (default) or `LLM_PROVIDER=openrouter`.
 For Bedrock, set `CONTENT_MODEL` / `IMAGE_PROMPT_MODEL` (defaults to
 Nova Micro / Nova Lite) and ensure the Lambda's IAM role can invoke
 them. For OpenRouter, set `OPENROUTER_API_KEY` and `OPENROUTER_MODEL`.
 
-### Phase 7 — Image Generation
+### Phase 8 — Image Generation
 
 Set `IMAGE_PROVIDER` to `aws` (Bedrock Nova Canvas, default),
 `huggingface` (requires `HF_TOKEN`), `pollinations` (no key needed), or
 `freepik` (requires `FREEPIK_API_KEY`). `IMAGE_VARIATIONS_COUNT`
 controls how many variations are rendered (default 3, per spec).
 
-### Phase 8 — Testing
+### Phase 9 — Testing
 
-- **Local FastAPI**: `uvicorn app.main:app --reload` + `curl`/Postman.
+- **Local FastAPI**: `uvicorn app.main:app --reload` + browser at `/`, or `curl`/Postman against `/api/*`.
 - **Local Lambda**: `sam local invoke ContentGenerationFunction -e event.json`
-  or `sam local start-api` to hit it over HTTP.
+  or `sam local start-api` to hit it over HTTP (this does use Docker —
+  skip it if you're avoiding Docker entirely and test against the
+  deployed `ApiUrl` instead).
 - **API Gateway**: `curl` the deployed `ApiUrl` output.
 - **Knowledge Base**: call `KnowledgeBaseService().retrieve("test query")`
-  directly in a REPL to confirm the contract matches.
+  directly in a REPL to confirm Bedrock access and IAM permissions.
 - **LLM**: call `get_content_llm()._call_llm("You are a test.", "Say hi.")`
   directly to confirm credentials/model access.
 - **Image Generation**: call `get_image_gen_service().generate_image("a red circle")`
   directly to confirm the provider works before wiring the full pipeline.
-- **End-to-End**: `POST /api/generate` locally, then again after deploy.
+- **End-to-End**: open `/` locally, generate content through the UI, then repeat against the deployed `ApiUrl`.
 
-### Phase 9 — Production Checklist
+### Phase 10 — Production Checklist
 
-- [ ] `KNOWLEDGE_BASE_URL`/`KNOWLEDGE_BASE_API_KEY` set to production KB
+- [ ] `KNOWLEDGE_BASE_ID`/`KNOWLEDGE_BASE_REGION` set to production KB
 - [ ] Bedrock model access granted in the deployment region (if used)
+- [ ] `bedrock:Retrieve` IAM permission scoped to the correct KB ARN
 - [ ] `IMAGE_PROVIDER` credentials set and verified with a direct test call
-- [ ] CORS `AllowOrigins` restricted to your actual frontend origin(s)
+- [ ] CORS `AllowOrigins` restricted to your actual frontend origin(s) if serving the frontend separately
 - [ ] Lambda timeout/memory sized for your slowest image provider
 - [ ] CloudWatch log retention configured (default is "never expire" — set one)
-- [ ] Secrets (`OPENROUTER_API_KEY`, `HF_TOKEN`, `FREEPIK_API_KEY`,
-      `KNOWLEDGE_BASE_API_KEY`) moved from plain Lambda env vars to AWS
-      Secrets Manager or SSM Parameter Store for production
+- [ ] Secrets (`OPENROUTER_API_KEY`, `HF_TOKEN`, `FREEPIK_API_KEY`) moved
+      from plain Lambda env vars to AWS Secrets Manager or SSM Parameter
+      Store for production
 - [ ] Concurrency: set a reserved/provisioned concurrency limit if you
       need to protect downstream provider rate limits
 - [ ] Cost: Lambda cost is dominated by image-provider latency (up to
@@ -281,3 +376,9 @@ controls how many variations are rendered (default 3, per spec).
   renders.
 - Add per-provider circuit breaking if you support multiple image
   providers and want automatic failover rather than a hard failure.
+- The current frontend calls a few endpoints (generation history,
+  version selection, image editing) that aren't implemented in
+  `app/routes/content.py` yet — only `/api/generate`, `/api/content-types`,
+  and `/api/health` exist today. Build those out if the full frontend
+  experience (pick-an-image, edit, version history) is needed, or trim
+  the frontend down to match the current single-shot API.

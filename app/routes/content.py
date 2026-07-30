@@ -5,7 +5,7 @@ import logging
 from fastapi import APIRouter, HTTPException
 
 from app.config import settings
-from app.schemas.content import GenerateContentRequest, GenerateContentResponse
+from app.schemas.content import CONTENT_TYPES, GenerateContentRequest, GenerateContentResponse
 from app.services.content_generation_engine import ContentGenerationEngine, ContentGenerationError
 from app.services.image_generation_service import generate_variations
 from app.services.knowledge_base_service import KnowledgeBaseError, KnowledgeBaseService
@@ -26,6 +26,15 @@ def _build_engine() -> ContentGenerationEngine:
         content_llm=get_content_llm(),
         image_prompt_llm=get_image_prompt_llm(),
     )
+
+
+@router.get("/content-types")
+def list_content_types() -> dict:
+    """Content types the frontend's dropdown populates itself from.
+    Sourced from app/schemas/content.py's CONTENT_TYPES, which mirrors
+    the table in prompts/image_prompt_system.txt.
+    """
+    return {"content_types": CONTENT_TYPES}
 
 
 @router.post("/generate", response_model=GenerateContentResponse)
