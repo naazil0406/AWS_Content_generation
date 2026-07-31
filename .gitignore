@@ -4,3 +4,7 @@ __pycache__/
 .env
 .idea/
 .vscode/
+
+# AWS SAM
+.aws-sam/
+samconfig.toml

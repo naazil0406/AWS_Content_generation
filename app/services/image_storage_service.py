@@ -1,0 +1,72 @@
+"""
+Image Storage Service — uploads generated images to S3 and hands back
+presigned URLs instead of embedding raw image bytes in the API response.
+
+Why this exists: API Gateway (HTTP API) caps integration response
+payloads at 6 MB, and three base64-encoded PNGs plus content text can
+exceed that easily (base64 adds ~33% overhead on top of already-large
+PNGs). Returning short-lived S3 URLs keeps the JSON response to a few KB
+regardless of image size, and lets the browser fetch images directly
+from S3 rather than routing them back through Lambda/API Gateway.
+"""
+
+import logging
+import uuid
+from typing import List
+
+import boto3
+from botocore.exceptions import BotoCoreError, ClientError
+
+from app.config import settings
+
+logger = logging.getLogger(__name__)
+
+_s3_client = None
+
+
+def _client():
+    global _s3_client
+    if _s3_client is None:
+        # No explicit credentials — boto3's default chain handles this
+        # correctly via the Lambda execution role.
+        _s3_client = boto3.client("s3", region_name=settings.S3_REGION)
+    return _s3_client
+
+
+def upload_images_to_s3(images: List[bytes], generation_id: str = None) -> List[str]:
+    """Upload each image to S3 under a unique key and return a presigned
+    GET URL for each, valid for settings.S3_PRESIGNED_URL_EXPIRY seconds.
+
+    Raises RuntimeError if the bucket isn't configured or an upload fails
+    — callers should treat this the same as an image-generation failure.
+    """
+    if not settings.GENERATED_IMAGES_BUCKET:
+        raise RuntimeError(
+            "GENERATED_IMAGES_BUCKET is not configured. Set it to the S3 "
+            "bucket name created by template.yaml for storing generated images."
+        )
+
+    generation_id = generation_id or uuid.uuid4().hex
+    client = _client()
+    urls: List[str] = []
+
+    for i, image_bytes in enumerate(images):
+        key = f"generated/{generation_id}/{i}.png"
+        try:
+            client.put_object(
+                Bucket=settings.GENERATED_IMAGES_BUCKET,
+                Key=key,
+                Body=image_bytes,
+                ContentType="image/png",
+            )
+            url = client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": settings.GENERATED_IMAGES_BUCKET, "Key": key},
+                ExpiresIn=settings.S3_PRESIGNED_URL_EXPIRY,
+            )
+            urls.append(url)
+        except (ClientError, BotoCoreError) as exc:
+            logger.error("Failed to upload image %d to S3: %s", i, exc)
+            raise RuntimeError(f"Failed to upload generated image to S3: {exc}") from exc
+
+    return urls

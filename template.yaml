@@ -6,7 +6,7 @@ Description: >
 
 Globals:
   Function:
-    Timeout: 60
+    Timeout: 180
     MemorySize: 1024
     Runtime: python3.11
     Environment:
@@ -41,6 +41,22 @@ Resources:
         AllowMethods: ["*"]
         AllowHeaders: ["*"]
 
+  GeneratedImagesBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      # Generated images are transient — auto-delete after 1 day so the
+      # bucket doesn't grow unbounded from repeated testing/demo traffic.
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireGeneratedImages
+            Status: Enabled
+            ExpirationInDays: 1
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
   ContentGenerationFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -53,6 +69,7 @@ Resources:
           KNOWLEDGE_BASE_REGION: !Ref KnowledgeBaseRegion
           IMAGE_PROVIDER: !Ref ImageProvider
           FREEPIK_API_KEY: !Ref FreepikApiKey
+          GENERATED_IMAGES_BUCKET: !Ref GeneratedImagesBucket
       Policies:
         - Statement:
             - Effect: Allow
@@ -64,6 +81,11 @@ Resources:
               Action:
                 - bedrock:Retrieve
               Resource: !Sub "arn:aws:bedrock:${KnowledgeBaseRegion}:${AWS::AccountId}:knowledge-base/${KnowledgeBaseId}"
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+                - s3:GetObject
+              Resource: !Sub "${GeneratedImagesBucket.Arn}/*"
       Events:
         ApiEvent:
           Type: HttpApi
@@ -89,3 +111,6 @@ Outputs:
   FunctionName:
     Description: The Lambda function's actual name in AWS
     Value: !Ref ContentGenerationFunction
+  GeneratedImagesBucketName:
+    Description: S3 bucket storing generated images
+    Value: !Ref GeneratedImagesBucket

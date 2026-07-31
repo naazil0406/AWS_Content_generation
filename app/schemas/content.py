@@ -56,7 +56,7 @@ class GeneratedContent(BaseModel):
 class GenerateContentResponse(BaseModel):
     content: GeneratedContent
     images: List[str] = Field(
-        ..., description="Exactly three base64-encoded PNG image variations."
+        ..., description="Exactly three presigned S3 URLs for the generated image variations."
     )
 
 

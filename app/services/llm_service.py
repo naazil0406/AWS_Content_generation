@@ -153,13 +153,7 @@ class BedrockLLMService(BaseLLMService):
         self.max_tokens = max_tokens
         self.temperature = temperature
 
-        client_kwargs = {"region_name": region_name}
-        if aws_access_key_id and aws_secret_access_key:
-            client_kwargs["aws_access_key_id"] = aws_access_key_id
-            client_kwargs["aws_secret_access_key"] = aws_secret_access_key
-
-        self.client = boto3.client("bedrock-runtime", **client_kwargs)
-
+        self.client = boto3.client("bedrock-runtime", region_name=region_name)
     def _call_llm(self, system_prompt: str, user_prompt: str) -> str:
         from botocore.exceptions import BotoCoreError, ClientError
 

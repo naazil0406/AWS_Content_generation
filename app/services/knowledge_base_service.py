@@ -28,6 +28,12 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+# When the underlying Aurora Serverless vector store has auto-paused, its
+# error message contains this phrase. Detected specifically so we can wait
+# long enough for it to resume (typically 15-30s) instead of giving up
+# after only a few seconds of generic backoff.
+_AURORA_RESUME_MARKERS = ("auto-paused", "is resuming")
+
 
 class KnowledgeBaseError(RuntimeError):
     """Raised when the Knowledge Base cannot be reached or returns an
@@ -50,8 +56,9 @@ class KnowledgeBaseService:
         kb_id: str = settings.KNOWLEDGE_BASE_ID,
         region: str = settings.KNOWLEDGE_BASE_REGION,
         top_k: int = settings.KNOWLEDGE_BASE_TOP_K,
-        max_retries: int = settings.HTTP_MAX_RETRIES,
-        backoff_seconds: float = settings.HTTP_BACKOFF_SECONDS,
+        max_retries: int = settings.KNOWLEDGE_BASE_MAX_RETRIES,
+        backoff_seconds: float = settings.KNOWLEDGE_BASE_RETRY_BACKOFF_SECONDS,
+        resume_wait_seconds: float = settings.KNOWLEDGE_BASE_RESUME_WAIT_SECONDS,
     ):
         if not kb_id:
             raise KnowledgeBaseError(
@@ -64,16 +71,18 @@ class KnowledgeBaseService:
         self.top_k = top_k
         self.max_retries = max_retries
         self.backoff_seconds = backoff_seconds
+        self.resume_wait_seconds = resume_wait_seconds
         self._client = None  # lazy init so import-time never touches AWS
 
     @property
     def client(self):
         if self._client is None:
-            client_kwargs = {"region_name": self.region}
-            if settings.AWS_ACCESS_KEY_ID and settings.AWS_SECRET_ACCESS_KEY:
-                client_kwargs["aws_access_key_id"] = settings.AWS_ACCESS_KEY_ID
-                client_kwargs["aws_secret_access_key"] = settings.AWS_SECRET_ACCESS_KEY
-            self._client = boto3.client("bedrock-agent-runtime", **client_kwargs)
+            # No explicit credentials passed — boto3's default credential
+            # chain handles this correctly in every environment: the
+            # Lambda execution role (including its session token) when
+            # deployed, or ~/.aws/credentials / exported AWS_* env vars
+            # locally.
+            self._client = boto3.client("bedrock-agent-runtime", region_name=self.region)
         return self._client
 
     def retrieve(self, query: str, top_k: Optional[int] = None) -> List[dict]:
@@ -81,8 +90,12 @@ class KnowledgeBaseService:
         Knowledge Base. Returns a list of {"text": str, "source": str}
         dicts (empty list if the Knowledge Base finds nothing relevant).
 
-        Retries transient failures up to settings.HTTP_MAX_RETRIES times
-        with exponential backoff before raising KnowledgeBaseError.
+        Retries transient failures up to `max_retries` times. Most
+        failures use short exponential backoff, but an Aurora
+        auto-pause/resume error gets a much longer, fixed wait per
+        attempt (`resume_wait_seconds`), since that specific condition
+        reliably takes 15-30s to clear and a short backoff just burns
+        through all retries while Aurora is still waking up.
         """
         query = (query or "").strip()
         if not query:
@@ -105,16 +118,25 @@ class KnowledgeBaseService:
                 return self._parse_response(response)
             except (ClientError, BotoCoreError) as exc:
                 last_exc = exc
+                is_resuming = self._is_aurora_resuming(exc)
                 logger.warning(
-                    "Knowledge Base retrieval attempt %d/%d failed: %s",
-                    attempt, self.max_retries, exc,
+                    "Knowledge Base retrieval attempt %d/%d failed%s: %s",
+                    attempt, self.max_retries,
+                    " (Aurora resuming from auto-pause)" if is_resuming else "",
+                    exc,
                 )
                 if attempt < self.max_retries:
-                    time.sleep(self.backoff_seconds * attempt)
+                    wait = self.resume_wait_seconds if is_resuming else self.backoff_seconds * attempt
+                    time.sleep(wait)
 
         raise KnowledgeBaseError(
             f"Knowledge Base retrieval failed after {self.max_retries} attempts: {last_exc}"
         ) from last_exc
+
+    @staticmethod
+    def _is_aurora_resuming(exc: Exception) -> bool:
+        message = str(exc).lower()
+        return any(marker in message for marker in _AURORA_RESUME_MARKERS)
 
     @staticmethod
     def _parse_response(response: dict) -> List[dict]:

@@ -37,6 +37,14 @@ class Settings:
         "KNOWLEDGE_BASE_REGION", os.getenv("BEDROCK_REGION", os.getenv("AWS_REGION", "us-east-1"))
     )
     KNOWLEDGE_BASE_TOP_K: int = int(os.getenv("KNOWLEDGE_BASE_TOP_K", "10"))
+    # Retry settings specific to KB retrieval. Kept separate from the
+    # generic HTTP_MAX_RETRIES/HTTP_BACKOFF_SECONDS below because Aurora
+    # Serverless auto-pause resumes reliably take 15-30s — far longer
+    # than a short generic backoff — while other KB failures should still
+    # fail comparatively fast.
+    KNOWLEDGE_BASE_MAX_RETRIES: int = int(os.getenv("KNOWLEDGE_BASE_MAX_RETRIES", "5"))
+    KNOWLEDGE_BASE_RETRY_BACKOFF_SECONDS: float = float(os.getenv("KNOWLEDGE_BASE_RETRY_BACKOFF_SECONDS", "1.5"))
+    KNOWLEDGE_BASE_RESUME_WAIT_SECONDS: float = float(os.getenv("KNOWLEDGE_BASE_RESUME_WAIT_SECONDS", "20.0"))
 
     # --- LLM provider: AWS Bedrock (only supported provider) ---
     LLM_PROVIDER: str = "bedrock"
@@ -83,6 +91,14 @@ class Settings:
     FREEPIK_FILTER_NSFW: bool = os.getenv("FREEPIK_FILTER_NSFW", "true").strip().lower() == "true"
     FREEPIK_POLL_INTERVAL: float = float(os.getenv("FREEPIK_POLL_INTERVAL", "3.0"))
     FREEPIK_POLL_TIMEOUT: float = float(os.getenv("FREEPIK_POLL_TIMEOUT", "120.0"))
+
+    # --- Generated Image Storage (S3) ---
+    # Images are uploaded here and served back to the client as presigned
+    # URLs instead of being embedded as base64 in the API response — see
+    # app/services/image_storage_service.py for why.
+    GENERATED_IMAGES_BUCKET: str = os.getenv("GENERATED_IMAGES_BUCKET", "")
+    S3_REGION: str = os.getenv("S3_REGION", os.getenv("AWS_REGION", "us-east-1"))
+    S3_PRESIGNED_URL_EXPIRY: int = int(os.getenv("S3_PRESIGNED_URL_EXPIRY", "3600"))
 
     # --- Retries (external API calls: KB, LLM, image provider) ---
     HTTP_MAX_RETRIES: int = int(os.getenv("HTTP_MAX_RETRIES", "3"))

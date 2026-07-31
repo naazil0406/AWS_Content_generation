@@ -10,7 +10,6 @@
 :root {
   --ink: #16211d;
   --ink-soft: #24352e;
-  --ink-line: #33463d;
   --paper: #f4efe1;
   --paper-raised: #fbf8ef;
   --paper-rule: #ddd3b4;
@@ -39,78 +38,12 @@ html, body {
 button { font-family: inherit; cursor: pointer; }
 
 .wrap {
-  max-width: 1240px;
+  max-width: 900px;
   margin: 0 auto;
   padding: 40px 24px 80px;
 }
 
-.layout {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 32px;
-  align-items: start;
-}
-.layout.has-rail { grid-template-columns: 1fr 300px; }
-@media (max-width: 860px) {
-  .layout.has-rail { grid-template-columns: 1fr; }
-}
-
-.main-col { min-width: 0; }
-
-.history-rail {
-  border-left: 1px solid var(--paper-rule);
-  padding-left: 24px;
-}
-
-.history-rail-title {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--ink-text-soft);
-  margin-bottom: 12px;
-}
-
-.history-rail-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  max-height: 78vh;
-  overflow-y: auto;
-}
-
-.history-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  text-align: left;
-  background: var(--paper-raised);
-  border: 1px solid var(--paper-rule);
-  border-radius: 8px;
-  padding: 8px 10px;
-  cursor: pointer;
-}
-.history-item:hover { border-color: var(--slate); }
-.history-item.is-active { border-color: var(--gold-deep); background: rgba(184,134,43,0.08); }
-.history-item img {
-  width: 40px; height: 40px;
-  border-radius: 6px;
-  object-fit: cover;
-  flex-shrink: 0;
-}
-.history-item-label { display: flex; flex-direction: column; overflow: hidden; }
-.history-item-type {
-  font-size: 11px; font-weight: 600; color: var(--gold-deep);
-  text-transform: uppercase; letter-spacing: 0.04em;
-}
-.history-item-topic {
-  font-size: 12.5px; color: var(--ink);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 190px;
-}
-
-.header {
-  margin-bottom: 28px;
-}
+.header { margin-bottom: 28px; }
 
 .eyebrow {
   font-family: var(--font-mono);
@@ -129,112 +62,9 @@ h1 {
   color: var(--ink);
 }
 
-.sub {
-  color: var(--ink-text-soft);
-  font-size: 14.5px;
-  margin: 0;
-}
+.sub { color: var(--ink-text-soft); font-size: 14.5px; margin: 0; }
 
-.gen-tab {
-  border: 1px solid var(--paper-rule);
-  border-radius: var(--radius);
-  background: var(--paper-raised);
-  margin-bottom: 24px;
-  overflow: hidden;
-}
-
-.gen-tab-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 16px 20px;
-  cursor: pointer;
-  user-select: none;
-}
-
-.gen-tab-header-left {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.gen-tab-icon {
-  font-family: var(--font-mono);
-  font-size: 16px;
-  color: var(--gold-deep);
-  width: 20px;
-  text-align: center;
-  transition: transform 0.15s ease;
-}
-.gen-tab.open .gen-tab-icon { transform: rotate(45deg); }
-
-.gen-tab-title {
-  font-family: var(--font-display);
-  font-size: 17px;
-  font-weight: 600;
-  color: var(--ink);
-}
-
-.gen-tab-summary {
-  font-size: 12.5px;
-  color: var(--ink-text-soft);
-}
-
-.gen-tab-body {
-  max-height: 0;
-  overflow: hidden;
-  transition: max-height 0.2s ease;
-  border-top: 1px solid transparent;
-}
-.gen-tab.open .gen-tab-body {
-  max-height: 600px;
-  border-top: 1px solid var(--paper-rule);
-}
-
-.gen-tab-body-inner { padding: 20px; }
-
-.card {
-  background: var(--paper-raised);
-  border: 1px solid var(--paper-rule);
-  border-radius: var(--radius);
-  padding: 24px;
-  margin-bottom: 24px;
-}
-
-.field {
-  margin-bottom: 16px;
-}
-
-.field label {
-  display: block;
-  font-size: 12.5px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  color: var(--ink-soft);
-  margin-bottom: 6px;
-}
-
-.field select,
-.field input,
-.field textarea {
-  width: 100%;
-  padding: 10px 12px;
-  border: 1px solid var(--paper-rule);
-  border-radius: 8px;
-  background: #fff;
-  color: var(--ink-text);
-  font-family: inherit;
-  font-size: 14px;
-}
-
-.field textarea { resize: vertical; min-height: 64px; }
-
-.gen-trigger-row {
-  display: flex;
-  justify-content: flex-start;
-  margin-bottom: 24px;
-}
+.gen-trigger-row { display: flex; justify-content: flex-start; margin-bottom: 24px; }
 
 .gen-panel {
   background: var(--paper-raised);
@@ -247,190 +77,76 @@ h1 {
   transition: max-height 0.25s ease, opacity 0.2s ease, padding 0.25s ease;
   padding: 0 24px;
 }
-
-.gen-panel.open {
-  max-height: 520px;
-  opacity: 1;
-  padding: 22px 24px 24px;
-}
+.gen-panel.open { max-height: 520px; opacity: 1; padding: 22px 24px 24px; }
 
 .gen-panel-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 16px;
+  display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px;
 }
-
-.gen-panel-title {
-  font-family: var(--font-display);
-  font-size: 17px;
-  font-weight: 600;
-  color: var(--ink);
-  margin: 0;
-}
-
-.gen-panel-close {
-  background: none;
-  border: none;
-  color: var(--ink-text-soft);
-  font-size: 18px;
-  line-height: 1;
-  padding: 4px 6px;
-}
+.gen-panel-title { font-family: var(--font-display); font-size: 17px; font-weight: 600; color: var(--ink); margin: 0; }
+.gen-panel-close { background: none; border: none; color: var(--ink-text-soft); font-size: 18px; line-height: 1; padding: 4px 6px; }
 .gen-panel-close:hover { color: var(--ink); }
 
+.field { margin-bottom: 16px; }
+.field label { display: block; font-size: 12.5px; font-weight: 600; color: var(--ink-soft); margin-bottom: 6px; }
+.field select, .field input, .field textarea {
+  width: 100%; padding: 10px 12px; border: 1px solid var(--paper-rule);
+  border-radius: 8px; background: #fff; color: var(--ink-text); font-family: inherit; font-size: 14px;
+}
+.field textarea { resize: vertical; min-height: 64px; }
+
 .btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  border: none;
-  border-radius: 8px;
-  padding: 11px 20px;
-  font-size: 14px;
-  font-weight: 600;
-  background: var(--gold);
-  color: #1b1406;
+  display: inline-flex; align-items: center; gap: 8px; border: none; border-radius: 8px;
+  padding: 11px 20px; font-size: 14px; font-weight: 600; background: var(--gold); color: #1b1406;
   transition: background 0.15s ease;
 }
 .btn:hover { background: var(--gold-deep); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-.btn-ghost {
-  background: transparent;
-  border: 1px solid var(--paper-rule);
-  color: var(--ink-text);
-}
-.btn-ghost:hover { border-color: var(--gold); color: var(--gold-deep); background: transparent; }
-
 .spinner {
-  width: 14px; height: 14px;
-  border: 2px solid rgba(27,20,6,0.35);
-  border-top-color: #1b1406;
-  border-radius: 50%;
-  animation: spin 0.7s linear infinite;
+  width: 14px; height: 14px; border: 2px solid rgba(27,20,6,0.35);
+  border-top-color: #1b1406; border-radius: 50%; animation: spin 0.7s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-.status {
-  font-family: var(--font-mono);
-  font-size: 12.5px;
-  color: var(--ink-text-soft);
-  margin-top: 10px;
-}
+.status { font-family: var(--font-mono); font-size: 12.5px; color: var(--ink-text-soft); margin-top: 10px; }
 .status.error { color: var(--danger); }
 
+.card {
+  background: var(--paper-raised); border: 1px solid var(--paper-rule);
+  border-radius: var(--radius); padding: 24px; margin-bottom: 24px;
+}
+
+.section-title { font-family: var(--font-display); font-size: 19px; font-weight: 600; color: var(--ink); margin: 0 0 4px; }
+
 .content-text {
-  white-space: pre-wrap;
-  line-height: 1.55;
-  font-size: 15px;
-  border-top: 1px solid var(--paper-rule);
-  padding-top: 16px;
-  margin-top: 4px;
+  white-space: pre-wrap; line-height: 1.55; font-size: 15px;
+  border-top: 1px solid var(--paper-rule); padding-top: 16px; margin-top: 12px;
 }
 
-.section-title {
-  font-family: var(--font-display);
-  font-size: 19px;
-  font-weight: 600;
-  color: var(--ink);
-  margin: 0 0 4px;
-}
+.tags { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+.tag { font-family: var(--font-mono); font-size: 11px; color: var(--slate); background: #e7eef1; padding: 3px 8px; border-radius: 999px; }
 
-.section-hint {
-  font-size: 13px;
-  color: var(--ink-text-soft);
-  margin: 0 0 16px;
+.images {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 20px;
 }
+@media (max-width: 700px) { .images { grid-template-columns: 1fr; } }
 
-.candidates {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 14px;
+.image-card {
+  border: 2px solid var(--paper-rule); border-radius: var(--radius); overflow: hidden; background: #fff; position: relative;
 }
-@media (max-width: 700px) { .candidates { grid-template-columns: 1fr; } }
+.image-card img { width: 100%; display: block; aspect-ratio: 1 / 1; object-fit: cover; }
+.image-card-label {
+  position: absolute; top: 8px; left: 8px; background: rgba(22,33,29,0.82); color: #f4efe1;
+  font-family: var(--font-mono); font-size: 11px; padding: 3px 8px; border-radius: 999px;
+}
+.image-card-download {
+  display: block; text-align: center; padding: 8px; font-size: 12.5px; font-weight: 600;
+  color: var(--gold-deep); border-top: 1px solid var(--paper-rule); text-decoration: none;
+}
+.image-card-download:hover { background: #f4efe1; }
 
-.candidate {
-  border: 2px solid var(--paper-rule);
-  border-radius: var(--radius);
-  overflow: hidden;
-  background: #fff;
-  cursor: pointer;
-  transition: border-color 0.15s ease, transform 0.1s ease;
-  position: relative;
-}
-.candidate:hover { border-color: var(--gold); }
-.candidate.selected { border-color: var(--gold-deep); box-shadow: 0 0 0 2px var(--gold-deep) inset; }
-.candidate img { width: 100%; display: block; aspect-ratio: 1 / 1; object-fit: cover; }
-.candidate-label {
-  position: absolute; top: 8px; left: 8px;
-  background: rgba(22,33,29,0.82); color: #f4efe1;
-  font-family: var(--font-mono); font-size: 11px;
-  padding: 3px 8px; border-radius: 999px;
-}
-.candidate-check {
-  position: absolute; top: 8px; right: 8px;
-  width: 22px; height: 22px; border-radius: 50%;
-  background: var(--gold-deep); color: #fff;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 13px; font-weight: 700;
-}
-
-.selected-image-wrap { text-align: center; }
-.selected-image-wrap img {
-  max-width: 100%;
-  border-radius: var(--radius);
-  border: 1px solid var(--paper-rule);
-}
-
-.version-tag {
-  display: inline-block;
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  color: var(--slate);
-  background: #e7eef1;
-  padding: 3px 9px;
-  border-radius: 999px;
-  margin-bottom: 10px;
-}
-
-.edit-row {
-  display: flex;
-  gap: 10px;
-  margin-top: 16px;
-}
-.edit-row input { flex: 1; }
-
-.version-history {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-top: 16px;
-}
-.version-chip {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  border: 1px solid var(--paper-rule);
-  border-radius: 999px;
-  padding: 4px 6px 4px 4px;
-  background: #fff;
-  cursor: pointer;
-  font-size: 12px;
-}
-.version-chip.current { border-color: var(--gold-deep); background: #fbf1de; }
-.version-chip img { width: 26px; height: 26px; border-radius: 50%; object-fit: cover; }
-
-.tags {
-  display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px;
-}
-.tag {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--slate);
-  background: #e7eef1;
-  padding: 3px 8px;
-  border-radius: 999px;
-}
+.section-hint { margin-top: 16px; cursor: pointer; text-decoration: underline; font-size: 13px; color: var(--ink-text-soft); }
+.prompt-text { font-size: 13px; color: var(--ink-text-soft); border-top: 1px solid var(--paper-rule); padding-top: 12px; margin-top: 12px; }
 </style>
 </head>
 <body>
@@ -438,13 +154,9 @@ h1 {
 
   <div class="header">
     <p class="eyebrow">AI Content Generation</p>
-    <h1>Generate learning content + pick your image</h1>
-    <p class="sub">Content Type + Topic in — original text and 3 image candidates out. Pick one, then edit it as many times as you like.</p>
+    <h1>Generate learning content + images</h1>
+    <p class="sub">Content Type + Topic in — original text and 3 image variations out.</p>
   </div>
-
-  <!-- Step 1: Generate -->
-  <div class="layout" id="layout">
-  <div class="main-col">
 
   <div class="gen-trigger-row">
     <button class="btn" id="openGenBtn">+ Generate Content</button>
@@ -469,185 +181,24 @@ h1 {
     <div class="status" id="generateStatus"></div>
   </div>
 
-  <!-- Step 2: Generated content + candidates -->
   <div class="card" id="resultCard" hidden>
     <p class="section-title" id="resultTitle"></p>
     <div class="tags" id="resultTags"></div>
     <div class="content-text" id="contentText"></div>
 
-    <div style="margin-top:22px;" id="candidatePickerSection">
-      <p class="section-title" style="font-size:16px;">Pick an image</p>
-      <p class="section-hint">Click one of the 3 candidates below to select it.</p>
-      <div class="candidates" id="candidates"></div>
-    </div>
-  </div>
+    <div class="images" id="images"></div>
 
-  <!-- Step 3: Selected image + editing -->
-  <div class="card" id="editCard" hidden>
-    <p class="section-title" id="editCardTitle" style="font-size:16px;">Selected image</p>
-    <div class="tags" id="editCardTags"></div>
-    <div class="content-text" id="editCardContentText" hidden></div>
-
-    <div class="version-tag" id="versionTag"></div>
-    <div class="selected-image-wrap">
-      <img id="selectedImage" alt="Selected generated image" />
-    </div>
-
-    <div class="edit-row">
-      <input id="editRequest" type="text" placeholder='e.g. "make the shirt blue" or "remove the forklift"' />
-      <button class="btn" id="editBtn">Apply edit</button>
-    </div>
-    <div class="status" id="editStatus"></div>
-
-    <div class="version-history" id="versionHistory"></div>
-
-    <div class="section-hint" id="imagePromptToggle" style="margin-top:16px; cursor:pointer; text-decoration: underline;">Show image prompt ▾</div>
-    <p class="content-text" id="imagePromptText" hidden style="font-size:13px; color: var(--ink-text-soft);"></p>
-  </div>
-
-  </div>
-
-  <!-- Right-side history rail — hidden until the first generation exists -->
-  <aside class="history-rail" id="historyRail" hidden>
-    <div class="history-rail-title">Generated content</div>
-    <div class="history-rail-list" id="historyList"></div>
-  </aside>
+    <div class="section-hint" id="imagePromptToggle">Show image prompt ▾</div>
+    <p class="prompt-text" id="imagePromptText" hidden></p>
   </div>
 
 </div>
 
-
 <script>
 const API = "";
-// This project has no authentication yet (see architecture notes) — a
-// per-browser id is used so this page's generations don't collide with
-// another tab/session's. Not real identity, just isolation for the demo.
-const USER_ID = (() => {
-  let id = localStorage.getItem("acg_user_id");
-  if (!id) {
-    id = "user-" + Math.random().toString(36).slice(2, 10);
-    localStorage.setItem("acg_user_id", id);
-  }
-  return id;
-})();
-
-let currentGenerationId = null;
-
-// Session-only history for the right-side rail — {id, contentType, topic, imageBase64}
-const history = [];
-let activeHistoryId = null;
-
-function renderHistoryList() {
-  const list = document.getElementById("historyList");
-  list.innerHTML = history
-    .slice()
-    .reverse()
-    .map((item) => `
-      <button class="history-item${item.id === activeHistoryId ? " is-active" : ""}" data-id="${escapeHtml(item.id)}">
-        <img src="data:image/png;base64,${item.imageBase64}" alt="" />
-        <div class="history-item-label">
-          <span class="history-item-type">${escapeHtml(item.contentType)}</span>
-          <span class="history-item-topic">${escapeHtml(item.topic)}</span>
-        </div>
-      </button>`)
-    .join("");
-
-  list.querySelectorAll(".history-item").forEach((btn) => {
-    btn.addEventListener("click", () => loadHistoryEntry(btn.dataset.id));
-  });
-}
-
-function addHistoryEntry(entry) {
-  // Avoid a duplicate if this generation was already loaded from the
-  // persisted list (e.g. a quick page refresh right after generating).
-  const existingIndex = history.findIndex((item) => item.id === entry.id);
-  if (existingIndex !== -1) history.splice(existingIndex, 1);
-
-  history.push(entry);
-  activeHistoryId = entry.id;
-  document.getElementById("historyRail").hidden = false;
-  document.getElementById("layout").classList.add("has-rail");
-  renderHistoryList();
-}
-
-async function loadPersistedHistory() {
-  // Populates the right-side rail from what's actually saved
-  // (GenerationStore/SQLite + files under Generated_content /
-  // Generated_images on disk), so it survives a page refresh instead of
-  // only reflecting whatever happened in this browser session.
-  try {
-    const items = await api("/api/content");
-    if (!items.length) return;
-    items.reverse().forEach((item) => {
-      addHistoryEntry({
-        id: item.generation_id,
-        contentType: item.content_type,
-        topic: item.topic,
-        contentText: item.content_text,
-        tags: item.tags,
-        imageBase64: item.image_base64,
-      });
-    });
-    activeHistoryId = null;
-    renderHistoryList();
-  } catch (err) {
-    // Non-fatal — rail just stays empty/hidden until the next generation.
-  }
-}
-
-function updateHistoryThumb(generationId, imageBase64) {
-  const entry = history.find((item) => item.id === generationId);
-  if (entry) {
-    entry.imageBase64 = imageBase64;
-    renderHistoryList();
-  }
-}
-
-async function loadHistoryEntry(generationId) {
-  const entry = history.find((item) => item.id === generationId);
-  if (!entry) return;
-
-  activeHistoryId = generationId;
-  currentGenerationId = generationId;
-  renderHistoryList();
-
-  document.getElementById("resultCard").hidden = true;
-  document.getElementById("genPanel").classList.remove("open");
-
-  try {
-    const data = await api(`/api/content/${generationId}`);
-    document.getElementById("editCard").hidden = false;
-    document.getElementById("editCardTitle").textContent = `${data.content_type}: ${data.topic}`;
-    document.getElementById("editCardTags").innerHTML = (entry.tags || [])
-      .map((t) => `<span class="tag">${escapeHtml(t)}</span>`).join("");
-    const contentTextEl = document.getElementById("editCardContentText");
-    contentTextEl.textContent = data.content_text;
-    contentTextEl.hidden = false;
-
-    const current = data.versions.find((v) => v.is_current) || data.versions[data.versions.length - 1];
-    if (current) showVersion(current);
-    renderVersionChips(data.versions);
-    document.getElementById("editCard").scrollIntoView({ behavior: "smooth", block: "start" });
-  } catch (err) {
-    setStatus(document.getElementById("editStatus"), "Error loading history: " + err.message, true);
-  }
-}
-
-function renderVersionChips(versions) {
-  const wrap = document.getElementById("versionHistory");
-  wrap.innerHTML = versions.map((v) => `
-    <div class="version-chip ${v.is_current ? "current" : ""}" data-version-id="${escapeHtml(v.id)}">
-      <img src="data:image/png;base64,${v.image_base64}" alt="v${v.version_number}" />
-      v${v.version_number}
-    </div>
-  `).join("");
-  wrap.querySelectorAll(".version-chip").forEach((chip) => {
-    chip.addEventListener("click", () => restoreVersion(chip.dataset.versionId));
-  });
-}
 
 async function api(path, options = {}) {
-  const headers = Object.assign({ "X-User-Id": USER_ID }, options.headers || {});
+  const headers = Object.assign({}, options.headers || {});
   if (options.body && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
   const res = await fetch(API + path, Object.assign({}, options, { headers }));
   let body = null;
@@ -691,18 +242,18 @@ async function loadContentTypes() {
   }
 }
 
-function renderCandidates(candidates) {
-  const wrap = document.getElementById("candidates");
-  wrap.innerHTML = candidates.map((c, i) => `
-    <div class="candidate" data-candidate-id="${escapeHtml(c.id)}">
-      <span class="candidate-label">Option ${i + 1}</span>
-      <img src="data:image/png;base64,${c.image_base64}" alt="Image candidate ${i + 1}" />
+function renderImages(imageUrls) {
+  // The backend now returns presigned S3 URLs, not base64 image data
+  // (kept the API response small enough to avoid Lambda/API Gateway
+  // payload-size limits) — so these are used directly as <img src>.
+  const wrap = document.getElementById("images");
+  wrap.innerHTML = imageUrls.map((url, i) => `
+    <div class="image-card">
+      <span class="image-card-label">Option ${i + 1}</span>
+      <img src="${url}" alt="Generated image ${i + 1}" />
+      <a class="image-card-download" href="${url}" download="image-${i + 1}.png" target="_blank" rel="noopener">Download</a>
     </div>
   `).join("");
-
-  wrap.querySelectorAll(".candidate").forEach((node) => {
-    node.addEventListener("click", () => selectCandidate(node.dataset.candidateId, node));
-  });
 }
 
 async function generateContent() {
@@ -715,134 +266,45 @@ async function generateContent() {
   if (!topic) return setStatus(statusEl, "Enter a topic first.", true);
 
   document.getElementById("resultCard").hidden = true;
-  document.getElementById("editCard").hidden = true;
   btn.disabled = true;
-  setStatus(statusEl, "Generating content and 3 image candidates — this can take a moment…");
+  setStatus(statusEl, "Generating content and 3 image variations — this can take a moment…");
 
   try {
-    const result = await api("/api/content/generate", {
+    // Backend contract: POST /api/generate expects {prompt, content_type}
+    // and returns {content: {...}, images: [base64, base64, base64]}
+    const result = await api("/api/generate", {
       method: "POST",
-      body: JSON.stringify({ content_type: contentType, topic, image_count: 3 }),
+      body: JSON.stringify({ prompt: topic, content_type: contentType }),
     });
 
-    currentGenerationId = result.generation_id;
+    const { content, images } = result;
 
-    document.getElementById("resultTitle").textContent = `${result.content_type}: ${result.topic}`;
-    document.getElementById("contentText").textContent = result.content_text;
-    document.getElementById("resultTags").innerHTML = (result.tags || [])
+    document.getElementById("resultTitle").textContent =
+      content.title ? `${contentType}: ${content.title}` : contentType;
+    document.getElementById("contentText").textContent = content.content;
+    document.getElementById("resultTags").innerHTML = (content.hashtags || [])
       .map((t) => `<span class="tag">${escapeHtml(t)}</span>`).join("");
 
-    renderCandidates(result.image_candidates);
+    renderImages(images);
+
+    document.getElementById("imagePromptText").textContent = content.image_prompt || "";
+    document.getElementById("imagePromptText").hidden = true;
+    document.getElementById("imagePromptToggle").textContent = "Show image prompt ▾";
+
     document.getElementById("resultCard").hidden = false;
-    setStatus(statusEl, `Done — ${result.image_candidates.length} image candidate(s) generated.`);
+    setStatus(statusEl, `Done — ${images.length} image variation(s) generated.`);
     closeGenPanel();
     document.getElementById("resultCard").scrollIntoView({ behavior: "smooth", block: "start" });
-
-    addHistoryEntry({
-      id: result.generation_id,
-      contentType: result.content_type,
-      topic: result.topic,
-      contentText: result.content_text,
-      tags: result.tags || [],
-      imageBase64: result.image_candidates[0] ? result.image_candidates[0].image_base64 : "",
-    });
   } catch (err) {
     setStatus(statusEl, "Error: " + err.message, true);
   } finally {
     btn.disabled = false;
-  }
-}
-
-async function selectCandidate(candidateId, node) {
-  document.querySelectorAll(".candidate").forEach((c) => c.classList.remove("selected"));
-  node.classList.add("selected");
-
-  try {
-    const version = await api(`/api/content/${currentGenerationId}/select-image`, {
-      method: "POST",
-      body: JSON.stringify({ candidate_id: candidateId }),
-    });
-    showVersion(version);
-    await refreshHistory();
-    updateHistoryThumb(currentGenerationId, version.image_base64);
-    document.getElementById("editCard").hidden = false;
-    document.getElementById("editCard").scrollIntoView({ behavior: "smooth", block: "start" });
-  } catch (err) {
-    setStatus(document.getElementById("editStatus"), "Error selecting image: " + err.message, true);
-  }
-}
-
-function showVersion(version) {
-  document.getElementById("selectedImage").src = `data:image/png;base64,${version.image_base64}`;
-  document.getElementById("versionTag").textContent =
-    `Version ${version.version_number}` + (version.edit_request ? ` — "${version.edit_request}"` : " — original selection");
-
-  document.getElementById("imagePromptText").textContent = version.image_prompt || "";
-  document.getElementById("imagePromptText").hidden = true;
-  document.getElementById("imagePromptToggle").textContent = "Show image prompt ▾";
-}
-
-async function applyEdit() {
-  const input = document.getElementById("editRequest");
-  const editRequest = input.value.trim();
-  const btn = document.getElementById("editBtn");
-  const statusEl = document.getElementById("editStatus");
-
-  if (!currentGenerationId) return setStatus(statusEl, "Select an image first.", true);
-  if (!editRequest) return setStatus(statusEl, "Describe the change you want first.", true);
-
-  btn.disabled = true;
-  setStatus(statusEl, "Applying edit…");
-  try {
-    const version = await api(`/api/content/${currentGenerationId}/edit-image`, {
-      method: "POST",
-      body: JSON.stringify({ edit_request: editRequest }),
-    });
-    showVersion(version);
-    await refreshHistory();
-    updateHistoryThumb(currentGenerationId, version.image_base64);
-    input.value = "";
-    setStatus(statusEl, "Edit applied.");
-  } catch (err) {
-    setStatus(statusEl, "Error: " + err.message, true);
-  } finally {
-    btn.disabled = false;
-  }
-}
-
-async function refreshHistory() {
-  try {
-    const data = await api(`/api/content/${currentGenerationId}`);
-    renderVersionChips(data.versions);
-  } catch (err) {
-    document.getElementById("versionHistory").innerHTML = "";
-  }
-}
-
-async function restoreVersion(versionId) {
-  const statusEl = document.getElementById("editStatus");
-  try {
-    const version = await api(`/api/content/${currentGenerationId}/restore-version`, {
-      method: "POST",
-      body: JSON.stringify({ version_id: versionId }),
-    });
-    showVersion(version);
-    await refreshHistory();
-    updateHistoryThumb(currentGenerationId, version.image_base64);
-    setStatus(statusEl, `Restored version ${version.version_number}.`);
-  } catch (err) {
-    setStatus(statusEl, "Error restoring version: " + err.message, true);
   }
 }
 
 document.getElementById("openGenBtn").addEventListener("click", openGenPanel);
 document.getElementById("closeGenBtn").addEventListener("click", closeGenPanel);
 document.getElementById("generateBtn").addEventListener("click", generateContent);
-document.getElementById("editBtn").addEventListener("click", applyEdit);
-document.getElementById("editRequest").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") applyEdit();
-});
-
 document.getElementById("imagePromptToggle").addEventListener("click", () => {
   const el = document.getElementById("imagePromptText");
   const toggle = document.getElementById("imagePromptToggle");
@@ -851,7 +313,6 @@ document.getElementById("imagePromptToggle").addEventListener("click", () => {
 });
 
 loadContentTypes();
-loadPersistedHistory();
 </script>
 </body>
 </html>
