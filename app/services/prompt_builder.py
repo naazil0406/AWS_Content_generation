@@ -101,6 +101,83 @@ def negative_prompt_for_mode(mode: str) -> str:
     return _SCENE_NEGATIVE_PROMPT if mode == "scene" else _INFOGRAPHIC_NEGATIVE_PROMPT
 
 
+_COMBINED_OUTPUT_FORMAT_OVERRIDE = """
+======================================================================
+COMBINED-CALL MODE — read this section last, it overrides both
+"OUTPUT FORMAT" sections above.
+======================================================================
+You are doing BOTH roles above in a single response, to save a network
+round trip: first the Content Generation Agent's job (exactly per its
+instructions above), then — using that content as your single source of
+truth, exactly as the Image Prompt Generation Agent's instructions
+above require — its job.
+
+Do not show your work for either step. Return ONLY one JSON object and
+nothing else: no markdown fences, no commentary before or after it.
+
+{
+  "content_text": "<the learner-facing text the Content Generation Agent
+      would have produced, following ALL of its rules exactly>",
+  "image_prompt": "<the Image Prompt Generation Agent's image_prompt,
+      derived only from content_text above>",
+  "negative_prompt": "...",
+  "alt_text": "...",
+  "tags": ["..."],
+  "summary": "..."
+}
+"""
+
+
+@lru_cache(maxsize=1)
+def build_combined_system_prompt() -> str:
+    """System prompt for the merged single-call path: both agents'
+    original instructions, unmodified, plus a wrapper telling the model
+    to do both jobs in sequence within one response and emit one JSON
+    object. The two source .txt files are loaded as-is — nothing in
+    them is rewritten — so their individual contracts (including "content
+    is the image's single source of truth") stay intact; only the
+    transport (one call instead of two) changes.
+    """
+    return (
+        load_content_generation_system_prompt()
+        + "\n\n"
+        + load_image_prompt_system_prompt()
+        + "\n\n"
+        + _COMBINED_OUTPUT_FORMAT_OVERRIDE
+    )
+
+
+def build_combined_user_prompt(
+    content_type: str,
+    topic: str,
+    context_chunks: List[dict],
+    mode: str,
+    monthly_topic_content: Optional[str] = None,
+    common_data: Optional[str] = None,
+    web_results: Optional[str] = None,
+    daily_tip_focus: Optional[Tuple[str, str]] = None,
+    avoid_repeating: Optional[List[str]] = None,
+) -> str:
+    """User-turn prompt for the merged call — the union of what
+    build_content_generation_prompt() and build_image_prompt_request()
+    would each have sent, minus Generated Content/Output Mode-as-afterthought
+    (the model produces the content itself this call, then uses it)."""
+    user_prompt = build_content_generation_prompt(
+        content_type=content_type,
+        topic=topic,
+        context_chunks=context_chunks,
+        monthly_topic_content=monthly_topic_content,
+        common_data=common_data,
+        web_results=web_results,
+        daily_tip_focus=daily_tip_focus,
+        avoid_repeating=avoid_repeating,
+    )
+    if mode not in ("infographic", "scene"):
+        mode = "infographic"
+    user_prompt += f"\n\nOutput Mode (for the image-prompt half of your response): {mode}"
+    return user_prompt
+
+
 def build_content_generation_prompt(
     content_type: str,
     topic: str,

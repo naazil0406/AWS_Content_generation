@@ -10,7 +10,7 @@ from app.services.content_generation_engine import ContentGenerationEngine, Cont
 from app.services.image_generation_service import generate_variations
 from app.services.image_storage_service import upload_images_to_s3
 from app.services.knowledge_base_service import KnowledgeBaseError, KnowledgeBaseService
-from app.services.llm_service import get_content_llm, get_image_prompt_llm
+from app.services.llm_service import get_combined_llm
 from app.services.response_builder import build_response
 
 logger = logging.getLogger(__name__)
@@ -21,11 +21,14 @@ def _build_engine() -> ContentGenerationEngine:
     """Construct the engine with fresh provider instances per request.
     Providers are cheap to construct (HTTP/boto3 clients only), so no
     caching is needed in a Lambda's short-lived execution context.
+
+    Content generation and image-prompt generation now share one LLM
+    call (get_combined_llm) instead of two sequential ones — see
+    ContentGenerationEngine and llm_service.generate_combined_package.
     """
     return ContentGenerationEngine(
         knowledge_base=KnowledgeBaseService(),
-        content_llm=get_content_llm(),
-        image_prompt_llm=get_image_prompt_llm(),
+        llm=get_combined_llm(),
     )
 
 

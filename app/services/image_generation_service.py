@@ -19,8 +19,9 @@ import io
 import json
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from math import gcd
-from typing import List
+from typing import List, Optional
 from urllib.parse import quote
 
 import requests
@@ -268,23 +269,38 @@ def get_image_gen_service():
 
 
 def generate_variations(prompt: str, negative_prompt: str = "", count: int = 3) -> List[bytes]:
-    """Generate `count` image variations from ONE optimized prompt. Each
-    call goes to the same provider/model, which — being stochastic —
-    produces a distinct image per call; this is what gives "exactly
-    THREE image variations" from a single prompt. A failure on one
-    variation does not abort the others; if fewer than `count` succeed,
-    the caller decides whether that's acceptable.
+    """Generate `count` image variations from ONE optimized prompt, in
+    parallel. Each call goes to the same provider/model, which — being
+    stochastic — produces a distinct image per call; this is what gives
+    "exactly THREE image variations" from a single prompt. A failure on
+    one variation does not abort the others; if fewer than `count`
+    succeed, the caller decides whether that's acceptable.
+
+    Each generate_image() call is a blocking network round-trip (and, for
+    polling providers like Freepik, several round-trips) with no shared
+    state between variations, so they run concurrently on a thread pool
+    instead of one after another. This is the single biggest latency win
+    in the pipeline — three ~10-20s calls in series is 30-60s+; in
+    parallel it's ~one call's worth of wall-clock time.
     """
     service = get_image_gen_service()
-    images: List[bytes] = []
+    results: List[Optional[bytes]] = [None] * count
     errors: List[str] = []
-    for i in range(count):
-        try:
-            images.append(service.generate_image(prompt, negative_prompt=negative_prompt))
-        except Exception as exc:  # noqa: BLE001 - collect and continue
-            logger.error("Image variation %d/%d failed: %s", i + 1, count, exc)
-            errors.append(str(exc))
 
+    def _one(i: int) -> None:
+        results[i] = service.generate_image(prompt, negative_prompt=negative_prompt)
+
+    with ThreadPoolExecutor(max_workers=count) as pool:
+        futures = {pool.submit(_one, i): i for i in range(count)}
+        for future in as_completed(futures):
+            i = futures[future]
+            try:
+                future.result()
+            except Exception as exc:  # noqa: BLE001 - collect and continue
+                logger.error("Image variation %d/%d failed: %s", i + 1, count, exc)
+                errors.append(str(exc))
+
+    images = [img for img in results if img is not None]
     if not images:
         raise RuntimeError(f"All {count} image variations failed: {'; '.join(errors)}")
     return images

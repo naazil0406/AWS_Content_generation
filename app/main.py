@@ -24,6 +24,7 @@ from fastapi.responses import HTMLResponse
 from mangum import Mangum
 
 from app.routes import content
+from app.services.knowledge_base_service import KnowledgeBaseError, KnowledgeBaseService
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,36 @@ def serve_frontend() -> str:
 @app.get("/api/health")
 def health() -> dict:
     return {"status": "ok"}
+
+
+# --- Aurora keep-alive ---
+#
+# Aurora Serverless auto-pauses after sitting idle past its idle timeout,
+# and waking it back up (15-30s) is too slow to fit inside API Gateway's
+# hard 29-30s integration timeout (see knowledge_base_service.py). Rather
+# than touching the Aurora/RDS configuration, the bundled frontend
+# (frontend/index.html) pings this endpoint every ~4 minutes for as long
+# as someone has the page open, so Aurora never goes idle long enough to
+# pause during active use. It's a plain, cheap `retrieve()` call whose
+# result is discarded — only its side effect (keeping Aurora active)
+# matters. Multiple users' tabs pinging concurrently is harmless: it's a
+# stateless read, so redundant simultaneous pings just no-op past the
+# first one to land.
+_KEEPALIVE_QUERY = "keepalive-ping"
+
+
+@app.get("/api/warmup")
+def warmup() -> dict:
+    try:
+        KnowledgeBaseService().retrieve(_KEEPALIVE_QUERY, top_k=1)
+        return {"status": "ok"}
+    except KnowledgeBaseError as exc:
+        # Best-effort ping, not user-facing — don't raise a 5xx over
+        # this. Log it so CloudWatch shows if pings start failing (e.g.
+        # Aurora was already paused when the ping fired, or the
+        # ping itself is what's waking it up right now).
+        logger.warning("Aurora keep-alive ping failed: %s", exc)
+        return {"status": "error", "detail": str(exc)}
 
 
 # AWS Lambda entry point (API Gateway HTTP API -> Lambda -> Mangum -> FastAPI).

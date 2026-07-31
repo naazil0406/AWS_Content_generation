@@ -205,7 +205,10 @@ async function api(path, options = {}) {
   try { body = await res.json(); } catch (_) { /* no body */ }
   if (!res.ok) {
     const detail = (body && body.detail) ? body.detail : res.statusText;
-    throw new Error(detail);
+    const err = new Error(detail);
+    err.status = res.status;
+    err.retryAfter = parseInt(res.headers.get("Retry-After"), 10) || 20;
+    throw err;
   }
   return body;
 }
@@ -269,13 +272,35 @@ async function generateContent() {
   btn.disabled = true;
   setStatus(statusEl, "Generating content and 3 image variations — this can take a moment…");
 
+  const requestBody = JSON.stringify({ prompt: topic, content_type: contentType });
+  const MAX_WARMUP_RETRIES = 2; // Aurora's resume window is 15-30s; one
+                                // retry can land too early, so allow two.
+
   try {
-    // Backend contract: POST /api/generate expects {prompt, content_type}
-    // and returns {content: {...}, images: [base64, base64, base64]}
-    const result = await api("/api/generate", {
-      method: "POST",
-      body: JSON.stringify({ prompt: topic, content_type: contentType }),
-    });
+    let result;
+    let attempt = 0;
+    while (true) {
+      try {
+        // Backend contract: POST /api/generate expects {prompt, content_type}
+        // and returns {content: {...}, images: [url, url, url]}
+        result = await api("/api/generate", { method: "POST", body: requestBody });
+        break;
+      } catch (err) {
+        attempt += 1;
+        if (err.status === 503 && attempt <= MAX_WARMUP_RETRIES) {
+          // Knowledge base's database is waking up from an idle pause —
+          // this is expected occasionally and clears itself in ~15-30s.
+          setStatus(
+            statusEl,
+            `Error (${err.status}): ${err.message} — retrying in ${err.retryAfter}s… (attempt ${attempt}/${MAX_WARMUP_RETRIES})`
+          );
+          await new Promise((r) => setTimeout(r, err.retryAfter * 1000));
+          setStatus(statusEl, "Retrying…");
+          continue;
+        }
+        throw err;
+      }
+    }
 
     const { content, images } = result;
 
@@ -296,7 +321,10 @@ async function generateContent() {
     closeGenPanel();
     document.getElementById("resultCard").scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (err) {
-    setStatus(statusEl, "Error: " + err.message, true);
+    const msg = err.status === 503
+      ? `Error (${err.status}): ${err.message} — still failing after retries, please try again shortly.`
+      : `Error${err.status ? ` (${err.status})` : ""}: ${err.message}`;
+    setStatus(statusEl, msg, true);
   } finally {
     btn.disabled = false;
   }
@@ -313,6 +341,25 @@ document.getElementById("imagePromptToggle").addEventListener("click", () => {
 });
 
 loadContentTypes();
+
+// --- Aurora keep-alive ---
+// Aurora Serverless auto-pauses after sitting idle, and waking it back
+// up (15-30s) is too slow to fit inside API Gateway's hard 29-30s
+// integration timeout — so a generate() request that lands right after
+// a pause will fail (see api()'s 503/Retry-After handling above). This
+// pings a lightweight backend endpoint every 4 minutes for as long as
+// this tab stays open, keeping Aurora active during a real session.
+// It's a no-op fire-and-forget call: failures are ignored here since
+// generateContent() already handles a cold Aurora gracefully on its own.
+// Note: this only helps while at least one tab is open somewhere — the
+// very first request after an overnight/weekend gap with no open tabs
+// can still hit a cold start.
+const WARMUP_INTERVAL_MS = 4 * 60 * 1000;
+function pingWarmup() {
+  fetch(API + "/api/warmup").catch(() => {});
+}
+setInterval(pingWarmup, WARMUP_INTERVAL_MS);
+
 </script>
 </body>
 </html>

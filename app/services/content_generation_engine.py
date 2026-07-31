@@ -23,9 +23,8 @@ from app.schemas.content import CONTENT_TYPES
 from app.services.knowledge_base_service import KnowledgeBaseService
 from app.services.llm_service import BaseLLMService
 from app.services.prompt_builder import (
+    build_combined_system_prompt,
     image_mode_for_content_type,
-    load_content_generation_system_prompt,
-    load_image_prompt_system_prompt,
     negative_prompt_for_mode,
     pick_daily_tip_focus,
 )
@@ -38,7 +37,11 @@ logger = logging.getLogger(__name__)
 # up to this many times before falling back to the closest attempt.
 _DAILY_TIP_MIN_WORDS = 100
 _DAILY_TIP_MAX_WORDS = 180
-_DAILY_TIP_MAX_ATTEMPTS = 3
+# Was 3 — each retry is a full sequential LLM round trip, which is too
+# costly against a <10s total budget. One attempt only; if the model
+# misses the word-count range, we accept the closest attempt rather than
+# pay for a retry. See _generate_daily_tip() below.
+_DAILY_TIP_MAX_ATTEMPTS = 1
 
 
 class ContentGenerationError(RuntimeError):
@@ -53,12 +56,17 @@ class ContentGenerationEngine:
     def __init__(
         self,
         knowledge_base: KnowledgeBaseService,
-        content_llm: BaseLLMService,
-        image_prompt_llm: BaseLLMService,
+        llm: BaseLLMService,
     ):
+        """`llm` handles the merged content+image-prompt call (see
+        BaseLLMService.generate_combined_package / llm_service.get_combined_llm).
+        Content generation and image-prompt generation used to be two
+        sequential network calls; they're now one, since the second
+        agent's only real input beyond static instructions was the
+        first agent's output.
+        """
         self.knowledge_base = knowledge_base
-        self.content_llm = content_llm
-        self.image_prompt_llm = image_prompt_llm
+        self.llm = llm
 
     def generate(
         self,
@@ -96,60 +104,54 @@ class ContentGenerationEngine:
             logger.error("Knowledge Base retrieval failed: %s", exc)
             raise ContentGenerationError("Failed to retrieve context from the Knowledge Base.") from exc
 
-        # 3: generate structured, learner-facing content.
-        system_prompt = load_content_generation_system_prompt()
+        # 3 & 4: generate structured, learner-facing content AND the
+        # image prompt derived from it, in one combined LLM call (see
+        # prompt_builder.build_combined_system_prompt/build_combined_user_prompt
+        # and BaseLLMService.generate_combined_package). The image
+        # prompt is still always derived from the generated content
+        # (never the raw topic alone) — that ordering happens within the
+        # model's single response, not across two network calls.
+        mode = image_mode_for_content_type(content_type)
+        system_prompt = build_combined_system_prompt()
 
         # Daily Tip has its own contract: every request is anchored to
         # one randomly-chosen State/Error from the framework (see
-        # prompts/content_generation_system.txt's "DAILY TIP" section),
-        # and its 100-180 word range is enforced with bounded retries
-        # rather than trusting the model to hit it on the first try.
+        # prompts/content_generation_system.txt's "DAILY TIP" section).
+        # Its 100-180 word range used to be enforced with retries; that's
+        # now a single best-effort attempt (see _DAILY_TIP_MAX_ATTEMPTS)
+        # to keep total latency bounded.
         daily_tip_focus = pick_daily_tip_focus() if content_type == "Daily Tip" else None
 
         try:
             if content_type == "Daily Tip":
-                content_text = self._generate_daily_tip(
+                package = self._generate_daily_tip(
                     system_prompt=system_prompt,
                     topic=topic,
                     context_chunks=context_chunks,
+                    mode=mode,
                     common_data=common_data,
                     web_results=web_results,
                     avoid_repeating=avoid_repeating,
                     focus=daily_tip_focus,
                 )
             else:
-                content_text = self.content_llm.generate_content(
+                package = self.llm.generate_combined_package(
                     system_prompt=system_prompt,
                     content_type=content_type,
                     topic=topic,
                     context_chunks=context_chunks,
+                    mode=mode,
                     monthly_topic_content=monthly_topic_content,
                     common_data=common_data,
                     web_results=web_results,
                     avoid_repeating=avoid_repeating,
                 )
         except Exception as exc:
-            logger.error("Content generation failed: %s", exc)
-            raise ContentGenerationError("Failed to generate content.") from exc
+            logger.error("Combined content+image generation failed: %s", exc)
+            raise ContentGenerationError("Failed to generate content and image prompt.") from exc
 
-        # 4: generate the optimized image prompt from that content — the
-        # image prompt is always derived from the generated content
-        # (never the raw topic alone), so the image reflects what was
-        # actually written.
-        mode = image_mode_for_content_type(content_type)
-        image_system_prompt = load_image_prompt_system_prompt()
-        try:
-            image_package = self.image_prompt_llm.generate_image_prompt_package(
-                system_prompt=image_system_prompt,
-                content_type=content_type,
-                topic=topic,
-                generated_content=content_text,
-                context_chunks=context_chunks,
-                mode=mode,
-            )
-        except Exception as exc:
-            logger.error("Image prompt generation failed: %s", exc)
-            raise ContentGenerationError("Failed to generate an image prompt.") from exc
+        content_text = package["content_text"]
+        image_package = package
 
         # 5: validate.
         if not content_text.strip():
@@ -179,32 +181,41 @@ class ContentGenerationEngine:
         system_prompt: str,
         topic: str,
         context_chunks: List[dict],
+        mode: str,
         common_data: Optional[str],
         web_results: Optional[str],
         avoid_repeating: Optional[List[str]],
         focus,
-    ) -> str:
-        """Generate a single 100-180 word Daily Tip, retrying a bounded
-        number of times if the model's output falls outside that word
-        range. Returns the closest attempt if every retry misses."""
-        last_text = ""
+    ) -> dict:
+        """Generate a Daily Tip (content_text + image package together,
+        via the combined call), up to _DAILY_TIP_MAX_ATTEMPTS times if
+        content_text falls outside the 100-180 word range. Returns the
+        closest attempt's full package if every attempt misses.
+        _DAILY_TIP_MAX_ATTEMPTS is 1 by default — see its definition —
+        so in practice this is a single best-effort call, not a retry
+        loop; the loop is kept so raising the constant back up later
+        (e.g. for a background/async job that isn't latency-constrained)
+        is a one-line change.
+        """
+        last_package: Optional[dict] = None
         for attempt in range(1, _DAILY_TIP_MAX_ATTEMPTS + 1):
-            last_text = self.content_llm.generate_content(
+            last_package = self.llm.generate_combined_package(
                 system_prompt=system_prompt,
                 content_type="Daily Tip",
                 topic=topic,
                 context_chunks=context_chunks,
+                mode=mode,
                 common_data=common_data,
                 web_results=web_results,
                 avoid_repeating=avoid_repeating,
                 daily_tip_focus=focus,
             )
-            word_count = len(last_text.split())
+            word_count = len(last_package["content_text"].split())
             if _DAILY_TIP_MIN_WORDS <= word_count <= _DAILY_TIP_MAX_WORDS:
-                return last_text
+                return last_package
             logger.warning(
-                "Daily Tip attempt %d/%d was %d words (need %d-%d). Retrying.",
+                "Daily Tip attempt %d/%d was %d words (need %d-%d).",
                 attempt, _DAILY_TIP_MAX_ATTEMPTS, word_count,
                 _DAILY_TIP_MIN_WORDS, _DAILY_TIP_MAX_WORDS,
             )
-        return last_text
+        return last_package

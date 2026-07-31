@@ -86,6 +86,71 @@ class BaseLLMService:
             )
         return content_text
 
+    def generate_combined_package(
+        self,
+        system_prompt: str,
+        content_type: str,
+        topic: str,
+        context_chunks: List[dict],
+        mode: str,
+        monthly_topic_content: Optional[str] = None,
+        common_data: Optional[str] = None,
+        web_results: Optional[str] = None,
+        daily_tip_focus: Optional[tuple] = None,
+        avoid_repeating: Optional[List[str]] = None,
+    ) -> dict:
+        """Merged Content Generation Agent + Image Prompt Generation Agent
+        call: one LLM round trip instead of two, since the second agent's
+        only input beyond static instructions is the first agent's output
+        — there's no reason that has to be two separate network calls.
+        Returns a dict with keys: content_text, image_prompt,
+        negative_prompt, alt_text, tags, summary.
+        """
+        from app.services.prompt_builder import build_combined_user_prompt
+
+        user_prompt = build_combined_user_prompt(
+            content_type=content_type,
+            topic=topic,
+            context_chunks=context_chunks,
+            mode=mode,
+            monthly_topic_content=monthly_topic_content,
+            common_data=common_data,
+            web_results=web_results,
+            daily_tip_focus=daily_tip_focus,
+            avoid_repeating=avoid_repeating,
+        )
+        raw = _strip_code_fences(self._call_llm(system_prompt, user_prompt).strip())
+
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"Combined content+image generation did not return valid JSON: {exc}\n"
+                f"Raw response: {raw[:500]}"
+            ) from exc
+
+        content_text = (data.get("content_text") or "").strip().strip('"').strip()
+        content_text = re.sub(
+            rf"^{re.escape(content_type)}\s*:\s*", "", content_text, flags=re.IGNORECASE
+        )
+        if not content_text:
+            raise RuntimeError(
+                f"The model returned no content_text for '{content_type}' on topic '{topic}'."
+            )
+
+        image_prompt = (data.get("image_prompt") or "").strip()
+        if not image_prompt:
+            raise RuntimeError("Combined generation returned an empty image_prompt.")
+
+        return {
+            "content_text": content_text,
+            "image_prompt": image_prompt,
+            "negative_prompt": (data.get("negative_prompt") or "").strip(),
+            "alt_text": (data.get("alt_text") or "").strip(),
+            "tags": data.get("tags") or [],
+            "summary": (data.get("summary") or "").strip(),
+        }
+
     def generate_image_prompt_package(
         self,
         system_prompt: str,
@@ -187,6 +252,25 @@ def get_content_llm() -> BaseLLMService:
         model=settings.CONTENT_MODEL,
         max_tokens=settings.CONTENT_MAX_TOKENS,
         temperature=settings.CONTENT_TEMPERATURE,
+        region_name=settings.BEDROCK_REGION,
+        aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+        aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+    )
+
+
+def get_combined_llm() -> BaseLLMService:
+    """Factory for the merged content+image-prompt call. Uses
+    IMAGE_PROMPT_MODEL (Nova Lite by default) rather than CONTENT_MODEL
+    (Nova Micro), since the merged task is strictly harder than either
+    original task alone — it has to do both jobs correctly in one pass —
+    and Nova Lite is the more capable of the two. max_tokens is the sum
+    of both original budgets since the response now contains both
+    payloads.
+    """
+    return BedrockLLMService(
+        model=settings.IMAGE_PROMPT_MODEL,
+        max_tokens=settings.CONTENT_MAX_TOKENS + settings.IMAGE_PROMPT_MAX_TOKENS,
+        temperature=settings.IMAGE_PROMPT_TEMPERATURE,
         region_name=settings.BEDROCK_REGION,
         aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
         aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,

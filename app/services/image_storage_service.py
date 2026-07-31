@@ -12,7 +12,8 @@ from S3 rather than routing them back through Lambda/API Gateway.
 
 import logging
 import uuid
-from typing import List
+from concurrent.futures import ThreadPoolExecutor
+from typing import List, Optional
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
@@ -48,25 +49,33 @@ def upload_images_to_s3(images: List[bytes], generation_id: str = None) -> List[
 
     generation_id = generation_id or uuid.uuid4().hex
     client = _client()
-    urls: List[str] = []
+    results: List[Optional[str]] = [None] * len(images)
 
-    for i, image_bytes in enumerate(images):
+    def _one(i: int, image_bytes: bytes) -> None:
         key = f"generated/{generation_id}/{i}.png"
-        try:
-            client.put_object(
-                Bucket=settings.GENERATED_IMAGES_BUCKET,
-                Key=key,
-                Body=image_bytes,
-                ContentType="image/png",
-            )
-            url = client.generate_presigned_url(
-                "get_object",
-                Params={"Bucket": settings.GENERATED_IMAGES_BUCKET, "Key": key},
-                ExpiresIn=settings.S3_PRESIGNED_URL_EXPIRY,
-            )
-            urls.append(url)
-        except (ClientError, BotoCoreError) as exc:
-            logger.error("Failed to upload image %d to S3: %s", i, exc)
-            raise RuntimeError(f"Failed to upload generated image to S3: {exc}") from exc
+        client.put_object(
+            Bucket=settings.GENERATED_IMAGES_BUCKET,
+            Key=key,
+            Body=image_bytes,
+            ContentType="image/png",
+        )
+        results[i] = client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": settings.GENERATED_IMAGES_BUCKET, "Key": key},
+            ExpiresIn=settings.S3_PRESIGNED_URL_EXPIRY,
+        )
 
-    return urls
+    # Uploads are independent per-image, so run them concurrently rather
+    # than one after another — presigned-URL generation is a local HMAC
+    # computation (no extra network round trip), so the only real
+    # network cost per image is the put_object call itself.
+    with ThreadPoolExecutor(max_workers=len(images)) as pool:
+        futures = {pool.submit(_one, i, img): i for i, img in enumerate(images)}
+        for future, i in futures.items():
+            try:
+                future.result()
+            except (ClientError, BotoCoreError) as exc:
+                logger.error("Failed to upload image %d to S3: %s", i, exc)
+                raise RuntimeError(f"Failed to upload generated image to S3: {exc}") from exc
+
+    return results
