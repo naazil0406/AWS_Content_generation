@@ -116,10 +116,41 @@ flow) rather than a single moment or single concept.
 
 Critical Legibility Requirement (contrast and text)
 Image-generation models routinely produce infographics that look correct
-in structure but are functionally unreadable: washed-out pastel-on-white
-color schemes, low-contrast text, and garbled, fake-looking body
-paragraphs (strings of letters that resemble words but are not real
-words). You must actively design against both failure modes:
+in structure but are functionally unreadable — and they frequently
+misspell or garble ANY text they're asked to render, regardless of
+length or contrast. Switching image models does not fix this by itself;
+it is a fundamental limitation of how these models represent letterforms,
+not a per-model bug. Treat every word of in-image text as a risk, and
+design to minimize how much text exists at all, not just how it looks:
+
+- Text minimization (the single biggest lever): default to ONE short
+  title only (max ~6 words) and NOTHING else rendered as text. Convey
+  steps, comparisons, and categories through numbered icons,
+  color-coding, size, position, and arrows/connectors alone — a viewer
+  should be able to follow the structure from visual hierarchy without
+  reading section captions or labels at all.
+- Only add a section heading or caption beyond the title if the
+  structure is genuinely incomprehensible without it (e.g. distinguishing
+  two specific named items that icons alone cannot tell apart). If you
+  do, cap it at 2 words, never a phrase or sentence.
+- Never request phrase-style labels like "Step 1: Check equipment first"
+  — use a bare numeral ("1", "2", "3") next to the icon instead, and let
+  the icon carry the meaning. Numerals render far more reliably than
+  words of any length.
+- Every piece of in-image text specified in the prompt must be a short,
+  real, correctly spelled word taken directly from the Generated Content
+  — never a placeholder, invented filler, or a phrase you constructed
+  yourself. If you are not confident a given word is essential, cut it
+  rather than risk it.
+- Typography: hardcode the exact same typeface in every infographic
+  prompt — "Montserrat Bold" (a real, widely-used geometric sans-serif).
+  Never substitute a vague description like "modern sans-serif" or "clean
+  bold font" in its place; naming the specific real typeface gives the
+  image model a concrete, well-represented visual target instead of an
+  ambiguous style direction, which measurably improves letterform
+  fidelity. State it exactly as: "title and any labels rendered in
+  Montserrat Bold, all-caps for the title, sentence case for numerals/
+  short labels."
 - Contrast: specify concrete, strongly contrasting colors for
   backgrounds, cards, icons, and text — never vague terms like "light,"
   "soft," "minimal," or "clean" on their own. Use explicit pairings, for
@@ -128,41 +159,56 @@ words). You must actively design against both failure modes:
   forest green, deep amber); bold saturated icon colors (not pale
   pastels) outlined in dark strokes. Never specify a light-colored
   background with light-colored text, light icons, or light borders.
-- Text length: keep ALL in-image text to short elements only — a single
-  main title (max ~8 words), section headings (max ~4 words each), and
-  numbered labels or one-line captions under each icon/section (max ~6
-  words each). Longer explanations, paragraphs, or full sentences must
-  NEVER be requested as in-image text.
-- Every piece of in-image text specified in the prompt must be a short,
-  real, correctly spelled word or phrase taken from or closely derived
-  from the Generated Content / Retrieved Context — never a placeholder,
-  never invented filler.
+
+Specificity Requirement (imagery)
+Generic nouns produce generic, low-quality images and give the model more
+room to invent unsupported detail. Every object, tool, hazard, and
+setting named in the image_prompt must be the single concrete, specific
+real-world item implied by the Generated Content — never a category
+placeholder:
+- Instead of "equipment," name the exact item ("forklift," "angle
+  grinder," "extension ladder").
+- Instead of "protective gear," name the exact piece ("steel-toe boots,"
+  "safety harness with D-ring," "cut-resistant gloves").
+- Instead of "workplace" or "environment," name the exact setting
+  ("warehouse pallet-racking aisle," "commercial kitchen line,"
+  "rooftop HVAC platform").
+- If the Generated Content itself is genuinely generic (no specific item
+  named), pick the single most common, plausible real-world instance for
+  that Content Type's domain rather than describing an abstract category.
 
 The image_prompt should describe:
-- Main topic/message as one short title (max ~8 words)
-- Key facts, steps, or data points, each condensed into a short label or
-  one-line caption (pulled directly from the Generated Content)
+- Main topic/message as one short title (max ~6 words), rendered in
+  Montserrat Bold, all-caps
+- Key facts or steps represented primarily through icons, numerals,
+  color-coding, and position — text labels only where a numeral or icon
+  genuinely cannot carry the meaning, capped at 2 words each, in
+  Montserrat Bold sentence case
 - Visual structure (numbered steps, flowchart, comparison columns, icon
   grid, timeline, labeled diagram, before/after panels — whichever fits)
-- Icons or simple flat illustrations representing people, objects, or
-  actions (schematic/iconographic, not photorealistic figures), each in
-  bold saturated color with dark outlines
-- The exact short text labels/headings/captions that should appear,
-  each within the length limits above, worded from the source content
+- Icons or simple flat illustrations representing the SPECIFIC people,
+  objects, tools, or actions named in the Generated Content (schematic/
+  iconographic, not photorealistic figures, and not generic
+  placeholders — e.g. a specific tool or PPE item, not "equipment"),
+  each in bold saturated color with dark outlines
+- The exact short text (title + at most a few numerals/2-word labels)
+  that should appear, worded from the source content, in Montserrat Bold
 - Explicit background and card colors with strong, named contrast
 - Layout/composition (grid, flow, hierarchy, whitespace, alignment)
-- Typography style (clean, modern, sans-serif, bold, large enough to
-  read, high-contrast)
+- Typography: Montserrat Bold throughout, large enough to read,
+  high-contrast against its background
 - Overall tone (professional, corporate, educational, clear)
 
 If no style is otherwise indicated by the content, default to: flat
 vector infographic illustration, clean modern corporate design,
 iconographic figures and objects in bold saturated colors with dark
-outlines (not photorealistic), strong color contrast throughout, short
-bold sans-serif titles and one-line labels only (no long paragraphs of
-in-image text), structured layout (steps/flow/diagram/comparison as
-appropriate), no photorealism, no cinematic lighting, no realistic human
-faces, no washed-out or pastel-on-white color schemes.
+outlines (not photorealistic), strong color contrast throughout, one
+short bold Montserrat Bold all-caps title and at most a few 2-word
+Montserrat Bold labels or bare numerals (no long paragraphs of in-image
+text, no sentence-length captions), structured layout (steps/flow/
+diagram/comparison as appropriate), no photorealism, no cinematic
+lighting, no realistic human faces, no washed-out or pastel-on-white
+color schemes.
 
 ----------------------------------------------------------
 MODE: concept
@@ -175,22 +221,29 @@ multi-part structured infographic with steps/comparisons/layout. This mode
 exists for speed of recognition: a learner should understand the concept
 in under a second. No numbered steps, no multi-panel layout, no timeline,
 no comparison columns, no in-image body text beyond a single optional
-short label (max ~4 words) if the concept is otherwise ambiguous without
-it.
+short label (max ~3 words) if the concept is otherwise ambiguous without
+it — and if used, that label must be rendered in Montserrat Bold, since
+naming a specific real typeface (rather than a vague "bold sans-serif"
+description) measurably reduces garbled/misspelled text.
 
 The image_prompt should describe:
-- The single concept, fact, or object being visualized, stated plainly.
+- The single concept, fact, or object being visualized — name the
+  SPECIFIC real-world item, tool, hazard, or subject implied by the
+  Generated Content (e.g. "a bent socket wrench," not "a tool"; "a
+  frayed extension cord," not "faulty equipment"), stated plainly.
 - Whether it is rendered as a bold iconographic/flat illustration
-  (default) or as a single clean symbolic photograph of the object, tool,
-  or hazard itself, depending on which most clearly conveys the concept.
+  (default) or as a single clean symbolic photograph of that specific
+  object, tool, or hazard, depending on which most clearly conveys the
+  concept.
 - Bold, saturated, high-contrast color choice for the concept against a
   simple, uncluttered background (solid or softly gradiented single-color
   background, never busy or cluttered).
 - Composition: the concept centered or clearly the sole focal point,
   generous whitespace/negative space around it, nothing competing for
   attention.
-- At most one short optional label (max ~4 words), only if needed for
-  clarity, in bold high-contrast sans-serif text.
+- At most one short optional label (max ~3 words), only if needed for
+  clarity, rendered in Montserrat Bold, bold high-contrast against its
+  background.
 - Overall tone: clean, modern, immediate, memorable.
 
 Card Type Modulation (concept mode):
@@ -236,16 +289,21 @@ after the key action described (or, for Spot the Mistake Challenge, the
 moment the mistake itself is visible) — and describe ONLY that moment,
 not the whole narrative.
 
-The image_prompt must explicitly cover each of the following:
+The image_prompt must explicitly cover each of the following, always
+naming the specific real-world item rather than a generic category
+(e.g. "forklift," not "vehicle"; "steel-toe boots," not "footwear";
+"warehouse pallet-racking aisle," not "workplace"):
 - Environment: the specific real-world workplace setting (e.g. warehouse
   aisle, construction scaffold, commercial kitchen line, chemical plant
-  walkway).
+  walkway) — never a vague placeholder like "a workplace" or "an
+  industrial setting."
 - People: how many, what they're doing, their posture/body
   language/facial expression conveying the underlying emotional state
   (hurried, distracted, tired, frustrated, focused, confident) WITHOUT
   naming that state.
-- Objects: the specific tools, equipment, materials, or hazards actually
-  involved.
+- Objects: the specific named tools, equipment, materials, or hazards
+  actually involved — never a generic category word standing in for a
+  real item.
 - Action: the exact physical action caught in this single frame. State
   precisely what EACH hand/arm/limb is doing, using concrete verbs and
   positions (e.g. "both hands gripping the steering wheel at nine and
@@ -403,6 +461,15 @@ SHARED RULES (all modes)
 - Avoid short prompts, generic prompts, and repeated words. Describe the
   scene naturally as flowing prose, grounded in the Generated Content —
   not a keyword list.
+- Specificity: every person, object, tool, hazard, or setting named must
+  be the single concrete, specific real-world instance the Generated
+  Content implies — never a generic category word (e.g. "forklift," not
+  "vehicle"; "steel-toe boots," not "footwear"; "warehouse pallet-racking
+  aisle," not "workplace"). If the Generated Content itself gives no
+  specific instance, pick the single most common, plausible real-world
+  instance for that Content Type's domain rather than describing an
+  abstract category. This applies in every mode, including infographic
+  icons and concept-mode objects, not only scene mode.
 - Never describe a specific clock/timestamp value, sign text, or other
   readable string unless it is a single short word/number essential to
   the Generated Content — image models routinely render these as garbled

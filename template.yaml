@@ -6,7 +6,7 @@ Description: >
 
 Globals:
   Function:
-    Timeout: 180
+    Timeout: 60
     MemorySize: 1024
     Runtime: python3.11
     Environment:
@@ -43,19 +43,15 @@ Resources:
 
   GeneratedImagesBucket:
     Type: AWS::S3::Bucket
+    Description: >
+      Name for the S3 bucket that stores generated images. Must be
+      globally unique across all AWS accounts.
     Properties:
-      # Generated images are transient — auto-delete after 1 day so the
-      # bucket doesn't grow unbounded from repeated testing/demo traffic.
       LifecycleConfiguration:
         Rules:
           - Id: ExpireGeneratedImages
             Status: Enabled
-            ExpirationInDays: 1
-      PublicAccessBlockConfiguration:
-        BlockPublicAcls: true
-        BlockPublicPolicy: true
-        IgnorePublicAcls: true
-        RestrictPublicBuckets: true
+            ExpirationInDays: 1   # presigned URLs only last S3_PRESIGNED_URL_EXPIRY seconds anyway
 
   ContentGenerationFunction:
     Type: AWS::Serverless::Function
