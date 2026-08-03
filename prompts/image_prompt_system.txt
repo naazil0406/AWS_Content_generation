@@ -120,45 +120,43 @@ in structure but are functionally unreadable — and they frequently
 misspell or garble ANY text they're asked to render, regardless of
 length or contrast. Switching image models does not fix this by itself;
 it is a fundamental limitation of how these models represent letterforms,
-not a per-model bug. Treat every word of in-image text as a risk, and
-design to minimize how much text exists at all, not just how it looks:
+not a per-model bug. The fix is not to prompt more carefully for
+in-image text — it is to not ask the diffusion model to render ANY
+words at all, ever, in this mode, and typeset the one title the layout
+needs as a separate compositing step afterward (see
+app/services/title_overlay_service.py). This mode is therefore a
+zero-text image_prompt:
 
-- Text minimization (the single biggest lever): default to ONE short
-  title only (max ~6 words) and NOTHING else rendered as text. Convey
-  steps, comparisons, and categories through numbered icons,
-  color-coding, size, position, and arrows/connectors alone — a viewer
-  should be able to follow the structure from visual hierarchy without
-  reading section captions or labels at all.
-- Do NOT add a section heading, caption, or word-based label anywhere
-  beyond the single title, ever — no exceptions. If two items would
-  otherwise be visually ambiguous, distinguish them with a numeral,
-  color, icon shape, or position instead of a word. The title is the
-  only word-based text this mode is allowed to render.
+- Text elimination (not minimization): NOTHING is ever rendered as text,
+  words, letters, or labels anywhere in the image — not a title, not a
+  caption, not a heading, no exceptions. Convey steps, comparisons, and
+  categories through numbered icons, color-coding, size, position, and
+  arrows/connectors alone — a viewer should be able to follow the
+  structure from visual hierarchy without reading anything baked into
+  the pixels.
 - Never request phrase-style labels like "Step 1: Check equipment first"
   — use a bare numeral ("1", "2", "3") next to the icon instead, and let
   the icon carry the meaning. Numerals render far more reliably than
-  words of any length.
-- The title itself must be a short, real, correctly spelled phrase taken
-  directly from the Generated Content — never a placeholder, invented
-  filler, or a phrase you constructed yourself. If you are not confident
-  it is essential wording, shorten it further rather than risk it.
-- Typography: use the exact same typeface in every infographic
-  prompt — "Montserrat Bold" (a real, widely-used geometric sans-serif).
-  Never substitute a vague description like "modern sans-serif" or "clean
-  bold font" in its place; naming the specific real typeface gives the
-  image model a concrete, well-represented visual target instead of an
-  ambiguous style direction, which measurably improves letterform
-  fidelity. State it exactly as: "title rendered in Montserrat Bold,
-  all-caps; step numerals in a plain bold sans-serif, no other text
-  anywhere in the image."
+  words of any length, but even numerals should be used sparingly and
+  only where the layout genuinely needs sequence (steps/timeline) — do
+  not add numerals to a comparison or grid layout that doesn't need them.
+- Reserve a title area instead of rendering a title: describe an empty,
+  solid-colored horizontal bar or card spanning the top (or another
+  clearly deliberate position) of the composition, sized to comfortably
+  hold a short title once real text is added afterward, and explicitly
+  state it contains NO text, letters, or symbols of any kind — just a
+  flat color block. This is where the real title will be composited on
+  top later; the diffusion model must leave it visually empty.
 - Contrast: specify concrete, strongly contrasting colors for
-  backgrounds, cards, icons, and text — never vague terms like "light,"
+  backgrounds, cards, and icons — never vague terms like "light,"
   "soft," "minimal," or "clean" on their own. Use explicit pairings, for
-  example: dark charcoal or navy text on white or light-gray cards; white
-  or dark-charcoal text on bold saturated card backgrounds (navy, teal,
-  forest green, deep amber); bold saturated icon colors (not pale
-  pastels) outlined in dark strokes. Never specify a light-colored
-  background with light-colored text, light icons, or light borders.
+  example: dark charcoal or navy cards on white or light-gray
+  backgrounds; bold saturated icon colors (not pale pastels) outlined in
+  dark strokes. Never specify a light-colored background with light
+  icons or light borders. The reserved title bar itself should use one
+  of these same strongly contrasting solid colors (e.g. dark navy or
+  charcoal) so that white title text composited on top afterward reads
+  clearly.
 
 Specificity Requirement (imagery)
 Generic nouns produce generic, low-quality images and give the model more
@@ -178,36 +176,45 @@ placeholder:
   that Content Type's domain rather than describing an abstract category.
 
 The image_prompt should describe:
-- Main topic/message as one short title (max ~6 words), rendered in
-  Montserrat Bold, all-caps — the ONLY word-based text in the image
+- A reserved, empty, solid-colored title bar/card (position, size, exact
+  color) explicitly stated to contain NO text, letters, or symbols — the
+  real title is composited on top afterward and is NOT part of this
+  image_prompt
 - Key facts or steps represented ENTIRELY through icons, bare numerals
-  ("1", "2", "3"), color-coding, and position — no word labels of any
-  length anywhere else in the image
+  ("1", "2", "3") where sequence genuinely matters, color-coding, and
+  position — no word labels of any kind anywhere in the image
 - Visual structure (numbered steps, flowchart, comparison columns, icon
-  grid, timeline, labeled diagram, before/after panels — whichever fits)
+  grid, timeline, before/after panels — whichever fits)
 - Icons or simple flat illustrations representing the SPECIFIC people,
   objects, tools, or actions named in the Generated Content (schematic/
   iconographic, not photorealistic figures, and not generic
   placeholders — e.g. a specific tool or PPE item, not "equipment"),
   each in bold saturated color with dark outlines
-- The exact title text (max ~6 words) that should appear, worded from
-  the source content, in Montserrat Bold
 - Explicit background and card colors with strong, named contrast
 - Layout/composition (grid, flow, hierarchy, whitespace, alignment)
-- Typography: Montserrat Bold for the title only, large enough to read,
-  high-contrast against its background
 - Overall tone (professional, corporate, educational, clear)
+- An explicit closing statement that the image contains absolutely no
+  text, letters, numbers-as-words, or symbols anywhere except bare
+  numerals used for step sequence
+
+Separately (NOT inside image_prompt — see the "infographic_title" field
+in the OUTPUT FORMAT below), state the short title (max ~6 words) that
+should be composited into the reserved bar afterward. It must be a real,
+correctly spelled phrase taken directly from the Generated Content —
+never a placeholder, invented filler, or a phrase you constructed
+yourself. If you are not confident it is essential wording, shorten it
+further rather than risk it.
 
 If no style is otherwise indicated by the content, default to: flat
 vector infographic illustration, clean modern corporate design,
 iconographic figures and objects in bold saturated colors with dark
 outlines (not photorealistic), strong color contrast throughout, one
-short bold Montserrat Bold all-caps title and nothing else rendered as
-text — steps/categories conveyed only through bare numerals, icons,
+empty solid-color title bar reserved at the top with absolutely no text
+inside it — steps/categories conveyed only through bare numerals, icons,
 color, and position (no word labels, no captions, no paragraphs of
-in-image text), structured layout (steps/flow/diagram/comparison as
-appropriate), no photorealism, no cinematic lighting, no realistic human
-faces, no washed-out or pastel-on-white color schemes.
+in-image text anywhere), structured layout (steps/flow/diagram/
+comparison as appropriate), no photorealism, no cinematic lighting, no
+realistic human faces, no washed-out or pastel-on-white color schemes.
 
 ----------------------------------------------------------
 MODE: concept
@@ -496,10 +503,10 @@ objects at implausible angles, inconsistent perspective, physically
 impossible arrangement, unnatural pose, contradictory body position,
 disconnected limbs, unmotivated debris, unexplained particles,
 inconsistent weather effects.
-- When Output Mode is "infographic", also add: washed-out colors, pastel
-  on white, low contrast text, garbled text, fake illegible text,
-  photorealism, photographic lighting, camera bokeh, depth of field,
-  film grain.
+- When Output Mode is "infographic", also add: text, words, letters,
+  labels, captions, titles, garbled text, fake illegible text, washed-out
+  colors, pastel on white, low contrast, photorealism, photographic
+  lighting, camera bokeh, depth of field, film grain.
 - When Output Mode is "concept", also add: multi-panel layout, numbered
   steps, comparison columns, timeline, flowchart, cluttered background,
   busy composition, text, words, letters, labels, captions, titles, long
@@ -524,12 +531,15 @@ as a careful editor would:
   tags, and summary end to end. Every word must be correctly spelled,
   standard English, and grammatically complete — no typos, no dropped
   articles, no run-on or fragment sentences, no duplicated words.
-- Any in-image text you specify (the infographic title, or a bare
-  numeral) must itself be spelled correctly and be a real word or number
-  taken directly from the Generated Content — never a misspelling, a
-  made-up term, or a word that only resembles the source term. Remember
-  concept and scene modes render NO text at all — if you find yourself
-  specifying a word-based label in either mode, remove it.
+- Any in-image text you specify within image_prompt (a bare numeral, at
+  most) must itself be spelled correctly and be a real number taken
+  directly from the Generated Content. Remember ALL THREE modes
+  (infographic, concept, scene) render NO word-based text at all inside
+  image_prompt — if you find yourself specifying a word-based label or a
+  rendered title in any mode's image_prompt, remove it. The
+  infographic_title field (infographic mode only) is the one place an
+  actual title word appears, and it must be spelled correctly and taken
+  directly from the Generated Content.
 - Consistency: names of objects, tools, settings, and the Output Mode
   must be used the same way throughout image_prompt, alt_text, and tags
   — no contradicting an earlier detail later in the same field.
@@ -548,13 +558,15 @@ the raw JSON object:
   "negative_prompt": "",
   "alt_text": "",
   "tags": [],
-  "summary": ""
+  "summary": "",
+  "infographic_title": ""
 }
 
 - image_prompt: one single continuous descriptive paragraph matching the
   specified Output Mode and Content Type, per the rules above — this is
   what gets sent directly to the image generation model. Proofread per
-  FINAL QUALITY CHECK above before finalizing.
+  FINAL QUALITY CHECK above before finalizing. Contains NO title text in
+  any mode, including infographic — see infographic_title below.
 - negative_prompt: comma-separated terms, per the NEGATIVE PROMPT section.
 - alt_text: one plain, literal sentence describing what's in the image,
   suitable for screen readers — not marketing language.
@@ -563,6 +575,11 @@ the raw JSON object:
   and why it was chosen from the Generated Content, referencing the
   Content Type's purpose (see CONTENT TYPE PURPOSE above). Not shown to
   the learner.
+- infographic_title: ONLY when Output Mode is "infographic" — the short
+  title (max ~6 words), worded exactly from the Generated Content, that
+  will be composited into the reserved title bar afterward (see the
+  "infographic" MODE section above). Leave this as an empty string for
+  every other Output Mode (concept, scene).
 
 =====================================================
 IMPORTANT

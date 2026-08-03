@@ -59,28 +59,29 @@ _INFOGRAPHIC_NEGATIVE_PROMPT = (
     "photorealistic, realistic photo, photograph, cinematic lighting, "
     "realistic human faces, realistic skin texture, depth of field, "
     "camera bokeh, film grain, 3D render of real people, blurry, low detail, "
-    "watermarks, logos"
+    "watermarks, logos, misspelled text, garbled text, illegible text, typos"
 )
 _SCENE_NEGATIVE_PROMPT = (
     "infographic, icon, iconographic illustration, flat vector illustration, "
     "diagram, chart, flowchart, numbered steps, labeled boxes, comparison "
     "columns, collage, grid of panels, cartoon, clip art, text, captions, "
     "titles, labels, watermarks, logos, low quality, blurry, distorted "
-    "anatomy, extra limbs"
+    "anatomy, extra limbs, misspelled text, garbled text, illegible text, typos"
 )
 # concept mode is neither photorealistic (like scene) nor a full multi-step
 # structured layout (like infographic) — a single centered icon/object
-# against a flat background with NO text at all, so its fallback bans
-# both extremes plus any word-based text (labels, captions, titles) and
-# the things that turn it into a mini-infographic (steps, panels).
+# against a flat background, optionally with one short high-impact label,
+# so its fallback bans both extremes and the things that turn it into a
+# mini-infographic (steps, panels) without banning text/labels outright —
+# it instead guards against the text being wrong (misspelled/garbled).
 _CONCEPT_NEGATIVE_PROMPT = (
     "photorealistic, realistic photo, photograph, cinematic lighting, "
     "realistic human faces, realistic skin texture, depth of field, "
     "camera bokeh, film grain, multi-panel layout, numbered steps, "
     "comparison columns, timeline, flowchart, cluttered background, "
-    "busy composition, text, words, letters, labels, captions, titles, "
-    "long paragraphs of text, narrative scene with multiple people, "
-    "watermarks, logos, low quality, blurry"
+    "busy composition, long paragraphs of text, multiple text labels, "
+    "narrative scene with multiple people, watermarks, logos, low quality, "
+    "blurry, misspelled text, garbled text, illegible text, typos"
 )
 
 
