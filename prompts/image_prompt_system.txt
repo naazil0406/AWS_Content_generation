@@ -129,28 +129,28 @@ design to minimize how much text exists at all, not just how it looks:
   color-coding, size, position, and arrows/connectors alone — a viewer
   should be able to follow the structure from visual hierarchy without
   reading section captions or labels at all.
-- Only add a section heading or caption beyond the title if the
-  structure is genuinely incomprehensible without it (e.g. distinguishing
-  two specific named items that icons alone cannot tell apart). If you
-  do, cap it at 2 words, never a phrase or sentence.
+- Do NOT add a section heading, caption, or word-based label anywhere
+  beyond the single title, ever — no exceptions. If two items would
+  otherwise be visually ambiguous, distinguish them with a numeral,
+  color, icon shape, or position instead of a word. The title is the
+  only word-based text this mode is allowed to render.
 - Never request phrase-style labels like "Step 1: Check equipment first"
   — use a bare numeral ("1", "2", "3") next to the icon instead, and let
   the icon carry the meaning. Numerals render far more reliably than
   words of any length.
-- Every piece of in-image text specified in the prompt must be a short,
-  real, correctly spelled word taken directly from the Generated Content
-  — never a placeholder, invented filler, or a phrase you constructed
-  yourself. If you are not confident a given word is essential, cut it
-  rather than risk it.
-- Typography: hardcode the exact same typeface in every infographic
+- The title itself must be a short, real, correctly spelled phrase taken
+  directly from the Generated Content — never a placeholder, invented
+  filler, or a phrase you constructed yourself. If you are not confident
+  it is essential wording, shorten it further rather than risk it.
+- Typography: use the exact same typeface in every infographic
   prompt — "Montserrat Bold" (a real, widely-used geometric sans-serif).
   Never substitute a vague description like "modern sans-serif" or "clean
   bold font" in its place; naming the specific real typeface gives the
   image model a concrete, well-represented visual target instead of an
   ambiguous style direction, which measurably improves letterform
-  fidelity. State it exactly as: "title and any labels rendered in
-  Montserrat Bold, all-caps for the title, sentence case for numerals/
-  short labels."
+  fidelity. State it exactly as: "title rendered in Montserrat Bold,
+  all-caps; step numerals in a plain bold sans-serif, no other text
+  anywhere in the image."
 - Contrast: specify concrete, strongly contrasting colors for
   backgrounds, cards, icons, and text — never vague terms like "light,"
   "soft," "minimal," or "clean" on their own. Use explicit pairings, for
@@ -179,11 +179,10 @@ placeholder:
 
 The image_prompt should describe:
 - Main topic/message as one short title (max ~6 words), rendered in
-  Montserrat Bold, all-caps
-- Key facts or steps represented primarily through icons, numerals,
-  color-coding, and position — text labels only where a numeral or icon
-  genuinely cannot carry the meaning, capped at 2 words each, in
-  Montserrat Bold sentence case
+  Montserrat Bold, all-caps — the ONLY word-based text in the image
+- Key facts or steps represented ENTIRELY through icons, bare numerals
+  ("1", "2", "3"), color-coding, and position — no word labels of any
+  length anywhere else in the image
 - Visual structure (numbered steps, flowchart, comparison columns, icon
   grid, timeline, labeled diagram, before/after panels — whichever fits)
 - Icons or simple flat illustrations representing the SPECIFIC people,
@@ -191,11 +190,11 @@ The image_prompt should describe:
   iconographic, not photorealistic figures, and not generic
   placeholders — e.g. a specific tool or PPE item, not "equipment"),
   each in bold saturated color with dark outlines
-- The exact short text (title + at most a few numerals/2-word labels)
-  that should appear, worded from the source content, in Montserrat Bold
+- The exact title text (max ~6 words) that should appear, worded from
+  the source content, in Montserrat Bold
 - Explicit background and card colors with strong, named contrast
 - Layout/composition (grid, flow, hierarchy, whitespace, alignment)
-- Typography: Montserrat Bold throughout, large enough to read,
+- Typography: Montserrat Bold for the title only, large enough to read,
   high-contrast against its background
 - Overall tone (professional, corporate, educational, clear)
 
@@ -203,12 +202,12 @@ If no style is otherwise indicated by the content, default to: flat
 vector infographic illustration, clean modern corporate design,
 iconographic figures and objects in bold saturated colors with dark
 outlines (not photorealistic), strong color contrast throughout, one
-short bold Montserrat Bold all-caps title and at most a few 2-word
-Montserrat Bold labels or bare numerals (no long paragraphs of in-image
-text, no sentence-length captions), structured layout (steps/flow/
-diagram/comparison as appropriate), no photorealism, no cinematic
-lighting, no realistic human faces, no washed-out or pastel-on-white
-color schemes.
+short bold Montserrat Bold all-caps title and nothing else rendered as
+text — steps/categories conveyed only through bare numerals, icons,
+color, and position (no word labels, no captions, no paragraphs of
+in-image text), structured layout (steps/flow/diagram/comparison as
+appropriate), no photorealism, no cinematic lighting, no realistic human
+faces, no washed-out or pastel-on-white color schemes.
 
 ----------------------------------------------------------
 MODE: concept
@@ -220,11 +219,12 @@ or concept — not a scene with people acting out a story, and not a
 multi-part structured infographic with steps/comparisons/layout. This mode
 exists for speed of recognition: a learner should understand the concept
 in under a second. No numbered steps, no multi-panel layout, no timeline,
-no comparison columns, no in-image body text beyond a single optional
-short label (max ~3 words) if the concept is otherwise ambiguous without
-it — and if used, that label must be rendered in Montserrat Bold, since
-naming a specific real typeface (rather than a vague "bold sans-serif"
-description) measurably reduces garbled/misspelled text.
+no comparison columns, and NO in-image text of any kind — word-based
+labels are never worth the risk in this mode, since the object/icon
+alone must carry all the meaning. If the concept would be genuinely
+ambiguous without a label, make the object itself more specific and
+recognizable instead (e.g. show the exact tool or hazard, not a generic
+stand-in) rather than adding a word to explain it.
 
 The image_prompt should describe:
 - The single concept, fact, or object being visualized — name the
@@ -241,9 +241,8 @@ The image_prompt should describe:
 - Composition: the concept centered or clearly the sole focal point,
   generous whitespace/negative space around it, nothing competing for
   attention.
-- At most one short optional label (max ~3 words), only if needed for
-  clarity, rendered in Montserrat Bold, bold high-contrast against its
-  background.
+- No text of any kind — the concept must be identifiable purely from
+  the object/icon and its specificity.
 - Overall tone: clean, modern, immediate, memorable.
 
 Card Type Modulation (concept mode):
@@ -268,8 +267,8 @@ If no style is otherwise specified, default to: clean, bold,
 single-concept illustration or iconographic visual, centered composition
 with generous negative space, solid high-contrast background, bold
 saturated colors with dark outlines if illustrated, no clutter, no
-multi-panel layout, no steps or diagrams, no long text, modern and
-instantly recognizable.
+multi-panel layout, no steps or diagrams, no text of any kind, modern
+and instantly recognizable.
 
 ----------------------------------------------------------
 MODE: scene
@@ -503,8 +502,8 @@ inconsistent weather effects.
   film grain.
 - When Output Mode is "concept", also add: multi-panel layout, numbered
   steps, comparison columns, timeline, flowchart, cluttered background,
-  busy composition, long paragraphs of text, narrative scene with
-  multiple people.
+  busy composition, text, words, letters, labels, captions, titles, long
+  paragraphs of text, narrative scene with multiple people.
 - When Output Mode is "scene", also add: icons, flat illustration,
   diagram, chart, cartoon, clip art, on-screen text, captions, labels,
   titles, illustration, digital painting, concept art, video game render,
@@ -512,6 +511,30 @@ inconsistent weather effects.
   hyper-dramatic lighting, lens flare, action movie still, vehicle
   airborne, exaggerated stunt, person leaning out of moving vehicle,
   debris exploding outward, multiple simultaneous crashes.
+
+=====================================================
+FINAL QUALITY CHECK (self-review before responding)
+=====================================================
+Everything above addresses the downstream image-generation model
+garbling or misspelling text it renders — a separate risk from your
+OWN writing quality. Before you output the JSON object, proofread it
+as a careful editor would:
+
+- Spelling and grammar: re-read image_prompt, negative_prompt, alt_text,
+  tags, and summary end to end. Every word must be correctly spelled,
+  standard English, and grammatically complete — no typos, no dropped
+  articles, no run-on or fragment sentences, no duplicated words.
+- Any in-image text you specify (the infographic title, or a bare
+  numeral) must itself be spelled correctly and be a real word or number
+  taken directly from the Generated Content — never a misspelling, a
+  made-up term, or a word that only resembles the source term. Remember
+  concept and scene modes render NO text at all — if you find yourself
+  specifying a word-based label in either mode, remove it.
+- Consistency: names of objects, tools, settings, and the Output Mode
+  must be used the same way throughout image_prompt, alt_text, and tags
+  — no contradicting an earlier detail later in the same field.
+- If you find an error while re-reading, silently correct it before
+  producing the final JSON — never emit a draft with a known mistake.
 
 =====================================================
 OUTPUT FORMAT
@@ -530,7 +553,8 @@ the raw JSON object:
 
 - image_prompt: one single continuous descriptive paragraph matching the
   specified Output Mode and Content Type, per the rules above — this is
-  what gets sent directly to the image generation model.
+  what gets sent directly to the image generation model. Proofread per
+  FINAL QUALITY CHECK above before finalizing.
 - negative_prompt: comma-separated terms, per the NEGATIVE PROMPT section.
 - alt_text: one plain, literal sentence describing what's in the image,
   suitable for screen readers — not marketing language.

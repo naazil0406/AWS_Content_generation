@@ -18,10 +18,23 @@ _PROMPTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.p
 _CONTENT_GENERATION_SYSTEM_PROMPT_PATH = os.path.join(_PROMPTS_DIR, "content_generation_system.txt")
 _IMAGE_PROMPT_SYSTEM_PROMPT_PATH = os.path.join(_PROMPTS_DIR, "image_prompt_system.txt")
 
-# Content types whose most effective visualization is a real photographic
-# moment ("scene") rather than a flat explainer graphic ("infographic").
-# See prompts/image_prompt_system.txt's CONTENT TYPE -> OUTPUT MODE MAPPING.
-_SCENE_MODE_CONTENT_TYPES = {"Scenario", "Spot the Mistake Challenge", "AI Image"}
+# Content Type -> Output Mode. Must stay in sync with the "CONTENT TYPE
+# -> OUTPUT MODE MAPPING" table in prompts/image_prompt_system.txt —
+# same eleven Content Types, same three modes (infographic/concept/scene).
+_CONTENT_TYPE_TO_MODE = {
+    "Recall Card": "concept",
+    "AI Image": "scene",
+    "Infographic": "infographic",
+    "Flashcard": "concept",
+    "Scenario": "scene",
+    "Spot the Mistake Challenge": "scene",
+    "Daily Quiz": "concept",
+    "Fun Fact": "concept",
+    "Reflection Question": "scene",
+    "Safety / Best Practice Tip": "scene",
+    "Daily Tip": "scene",
+}
+_VALID_MODES = ("infographic", "concept", "scene")
 
 # Must stay in sync with the "STATES AND ERRORS REFERENCE FRAMEWORK"
 # section of prompts/content_generation_system.txt — same four States,
@@ -37,10 +50,11 @@ _DAILY_TIP_FOCUS_ROTATION: List[Tuple[str, str]] = [("State", s) for s in _STATE
 
 # Negative-prompt fallbacks, used only when the Image Prompt Generation
 # Agent's JSON response comes back with an empty negative_prompt field.
-# A "scene" image needs photorealism/cinematic lighting, so the
-# infographic negative prompt (which bans exactly those things) would
-# actively fight against Scenario/Spot-the-Mistake images ever looking
-# realistic — hence two separate fallbacks, not one shared default.
+# One fallback per Output Mode (infographic/concept/scene) — a "scene"
+# image needs photorealism/cinematic lighting, so the infographic
+# negative prompt (which bans exactly those things) would actively
+# fight against Scenario/Spot-the-Mistake images ever looking realistic;
+# concept images are neither, so they get their own set of bans too.
 _INFOGRAPHIC_NEGATIVE_PROMPT = (
     "photorealistic, realistic photo, photograph, cinematic lighting, "
     "realistic human faces, realistic skin texture, depth of field, "
@@ -53,6 +67,20 @@ _SCENE_NEGATIVE_PROMPT = (
     "columns, collage, grid of panels, cartoon, clip art, text, captions, "
     "titles, labels, watermarks, logos, low quality, blurry, distorted "
     "anatomy, extra limbs"
+)
+# concept mode is neither photorealistic (like scene) nor a full multi-step
+# structured layout (like infographic) — a single centered icon/object
+# against a flat background with NO text at all, so its fallback bans
+# both extremes plus any word-based text (labels, captions, titles) and
+# the things that turn it into a mini-infographic (steps, panels).
+_CONCEPT_NEGATIVE_PROMPT = (
+    "photorealistic, realistic photo, photograph, cinematic lighting, "
+    "realistic human faces, realistic skin texture, depth of field, "
+    "camera bokeh, film grain, multi-panel layout, numbered steps, "
+    "comparison columns, timeline, flowchart, cluttered background, "
+    "busy composition, text, words, letters, labels, captions, titles, "
+    "long paragraphs of text, narrative scene with multiple people, "
+    "watermarks, logos, low quality, blurry"
 )
 
 
@@ -85,7 +113,7 @@ def format_context(chunks: List[dict]) -> str:
 
 
 def image_mode_for_content_type(content_type: str) -> str:
-    return "scene" if content_type in _SCENE_MODE_CONTENT_TYPES else "infographic"
+    return _CONTENT_TYPE_TO_MODE.get(content_type, "infographic")
 
 
 def pick_daily_tip_focus() -> Tuple[str, str]:
@@ -98,7 +126,11 @@ def pick_daily_tip_focus() -> Tuple[str, str]:
 def negative_prompt_for_mode(mode: str) -> str:
     """Fallback negative prompt used only when the LLM's own
     negative_prompt came back empty."""
-    return _SCENE_NEGATIVE_PROMPT if mode == "scene" else _INFOGRAPHIC_NEGATIVE_PROMPT
+    if mode == "scene":
+        return _SCENE_NEGATIVE_PROMPT
+    if mode == "concept":
+        return _CONCEPT_NEGATIVE_PROMPT
+    return _INFOGRAPHIC_NEGATIVE_PROMPT
 
 
 _COMBINED_OUTPUT_FORMAT_OVERRIDE = """
@@ -172,7 +204,7 @@ def build_combined_user_prompt(
         daily_tip_focus=daily_tip_focus,
         avoid_repeating=avoid_repeating,
     )
-    if mode not in ("infographic", "scene"):
+    if mode not in _VALID_MODES:
         mode = "infographic"
     user_prompt += f"\n\nOutput Mode (for the image-prompt half of your response): {mode}"
     return user_prompt
@@ -239,7 +271,7 @@ def build_image_prompt_request(
     mode: str,
 ) -> str:
     """Build the user-turn prompt for the Image Prompt Generation Agent."""
-    if mode not in ("infographic", "scene"):
+    if mode not in _VALID_MODES:
         mode = "infographic"
     return (
         f"Output Mode: {mode}\n\n"

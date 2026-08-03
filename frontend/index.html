@@ -123,9 +123,6 @@ h1 {
   border-top: 1px solid var(--paper-rule); padding-top: 16px; margin-top: 12px;
 }
 
-.tags { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
-.tag { font-family: var(--font-mono); font-size: 11px; color: var(--slate); background: #e7eef1; padding: 3px 8px; border-radius: 999px; }
-
 .images {
   display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 20px;
 }
@@ -211,7 +208,6 @@ h1 {
 
   <div class="card" id="resultCard" hidden>
     <p class="section-title" id="resultTitle"></p>
-    <div class="tags" id="resultTags"></div>
     <div class="content-text" id="contentText"></div>
 
     <div class="images" id="images"></div>
@@ -361,7 +357,6 @@ async function generateContentStreaming(contentType, topic, statusEl, timerValue
   document.getElementById("resultCard").hidden = false;
   document.getElementById("resultTitle").textContent = contentType;
   document.getElementById("contentText").textContent = "";
-  document.getElementById("resultTags").innerHTML = "";
 
   try {
     const res = await fetch("/api/generate/stream", {
@@ -390,10 +385,7 @@ async function generateContentStreaming(contentType, topic, statusEl, timerValue
         case "content_ready":
           contentReceived = true;
           document.getElementById("contentText").textContent = data.content_text;
-          document.getElementById("resultTags").innerHTML = (data.tags || [])
-            .map((t) => `<span class="tag">${escapeHtml(t)}</span>`).join("");
-          document.getElementById("resultTitle").textContent =
-            data.summary ? `${contentType}: ${data.summary}` : contentType;
+          document.getElementById("resultTitle").textContent = contentType;
           document.getElementById("imagePromptText").textContent = data.image_prompt || "";
           setStatus(statusEl, "Content ready — generating 3 image variations…");
           break;
