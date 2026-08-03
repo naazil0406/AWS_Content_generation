@@ -2,26 +2,35 @@
 Image Generation Service — provider-independent abstraction over the
 Image Generation Agent.
 
-Every provider exposes the same `generate_image(prompt, negative_prompt="")
--> bytes` interface, so `get_image_gen_service()` can hand back whichever
-one settings.IMAGE_PROVIDER selects, and `generate_variations()` doesn't
-need to know which provider it's talking to. Adding a new provider means
-adding one class with a `generate_image` method — no other code changes.
+Every provider exposes the same `generate_image(prompt, negative_prompt="",
+on_progress=None) -> bytes` interface, so `get_image_gen_service()` can
+hand back whichever one settings.IMAGE_PROVIDER selects, and
+`generate_variations()`/`generate_variations_events()` don't need to know
+which provider it's talking to. Adding a new provider means adding one
+class with a `generate_image` method — no other code changes.
 
 Three transports are included:
   - FreepikImageService: Freepik Mystic / Flux / Seedream endpoints (default).
   - PollinationsImageService: free, no API key required.
   - NovaCanvasService: AWS Bedrock Nova Canvas.
+
+`on_progress`, if given, is called from the worker thread with
+`(status: str, detail: dict)` at each meaningful step (submitted,
+polling, downloading, completed) — used by generate_variations_events()
+to stream live per-image progress over SSE. It's a no-op by default so
+the plain generate_image() call used elsewhere doesn't need to change.
 """
 
 import base64
 import io
 import json
 import logging
+import queue
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from math import gcd
-from typing import List, Optional
+from typing import Callable, List, Optional
 from urllib.parse import quote
 
 import requests
@@ -29,6 +38,13 @@ import requests
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+# Signature: on_progress(status, detail) -> None
+ProgressCallback = Optional[Callable[[str, dict], None]]
+
+
+def _noop_progress(status: str, detail: dict) -> None:
+    return None
 
 
 class PollinationsImageService:
@@ -41,12 +57,14 @@ class PollinationsImageService:
         self.height = height
         self.timeout = timeout
 
-    def generate_image(self, prompt: str, negative_prompt: str = "") -> bytes:
+    def generate_image(self, prompt: str, negative_prompt: str = "", on_progress: ProgressCallback = None) -> bytes:
+        on_progress = on_progress or _noop_progress
         full_prompt = f"{prompt}. Avoid: {negative_prompt}" if negative_prompt else prompt
         url = f"{self.base_url}/{quote(full_prompt)}"
         params = {"model": self.model, "width": self.width, "height": self.height, "nologo": "true"}
 
         logger.info("Calling Pollinations AI model '%s' (prompt=%d chars).", self.model, len(prompt))
+        on_progress("submitted", {"provider": "pollinations"})
         try:
             response = requests.get(url, params=params, timeout=self.timeout)
             response.raise_for_status()
@@ -55,6 +73,7 @@ class PollinationsImageService:
 
         if not response.content:
             raise RuntimeError("Pollinations AI returned no image data.")
+        on_progress("completed", {})
         return response.content
 
 
@@ -113,12 +132,14 @@ class FreepikImageService:
             }
         return {"prompt": full_prompt, "aspect_ratio": self.aspect_ratio}
 
-    def generate_image(self, prompt: str, negative_prompt: str = "") -> bytes:
+    def generate_image(self, prompt: str, negative_prompt: str = "", on_progress: ProgressCallback = None) -> bytes:
+        on_progress = on_progress or _noop_progress
         full_prompt = f"{prompt}. Avoid: {negative_prompt}" if negative_prompt else prompt
         headers = {"Content-Type": "application/json", "x-freepik-api-key": self.api_key}
         body = self._build_body(full_prompt)
 
         logger.info("Submitting to Freepik (model=%s, prompt=%d chars).", self.model, len(prompt))
+        on_progress("submitted", {"provider": "freepik", "model": self.model})
         try:
             response = requests.post(self.submit_url, headers=headers, json=body, timeout=30)
             response.raise_for_status()
@@ -130,7 +151,8 @@ class FreepikImageService:
         if not task_id:
             raise RuntimeError(f"Freepik ({self.model}) did not return a task_id.")
 
-        image_url = self._poll_until_complete(task_id, headers)
+        image_url = self._poll_until_complete(task_id, headers, on_progress)
+        on_progress("downloading", {})
         try:
             image_response = requests.get(image_url, timeout=60)
             image_response.raise_for_status()
@@ -139,13 +161,18 @@ class FreepikImageService:
 
         if not image_response.content:
             raise RuntimeError("Freepik image download returned no data.")
+        on_progress("completed", {})
         return image_response.content
 
-    def _poll_until_complete(self, task_id: str, headers: dict) -> str:
+    def _poll_until_complete(self, task_id: str, headers: dict, on_progress: ProgressCallback = None) -> str:
+        on_progress = on_progress or _noop_progress
         status_url = f"{self.submit_url}/{task_id}"
-        deadline = time.monotonic() + self.poll_timeout
+        started = time.monotonic()
+        deadline = started + self.poll_timeout
+        attempt = 0
 
         while True:
+            attempt += 1
             try:
                 status_response = requests.get(status_url, headers=headers, timeout=30)
                 status_response.raise_for_status()
@@ -154,6 +181,8 @@ class FreepikImageService:
 
             data = (status_response.json() or {}).get("data", {})
             status = data.get("status")
+            elapsed = time.monotonic() - started
+            on_progress("polling", {"attempt": attempt, "elapsed_seconds": round(elapsed, 1), "freepik_status": status})
 
             if status == "COMPLETED":
                 generated = data.get("generated", [])
@@ -194,7 +223,8 @@ class NovaCanvasService:
 
         self.client = boto3.client("bedrock-runtime", region_name=region_name)
 
-    def generate_image(self, prompt: str, negative_prompt: str = "") -> bytes:
+    def generate_image(self, prompt: str, negative_prompt: str = "", on_progress: ProgressCallback = None) -> bytes:
+        on_progress = on_progress or _noop_progress
         from botocore.exceptions import BotoCoreError, ClientError
 
         text_to_image_params = {"text": prompt}
@@ -214,6 +244,7 @@ class NovaCanvasService:
         }
 
         logger.info("Calling Nova Canvas model '%s' (prompt=%d chars).", self.model, len(prompt))
+        on_progress("submitted", {"provider": "aws", "model": self.model})
         try:
             response = self.client.invoke_model(
                 modelId=self.model, body=json.dumps(body),
@@ -229,14 +260,21 @@ class NovaCanvasService:
         images = response_body.get("images", [])
         if not images:
             raise RuntimeError("Nova Canvas returned no images.")
+        on_progress("completed", {})
         return base64.b64decode(images[0])
 
 
-def get_image_gen_service():
+def get_image_gen_service(poll_timeout_override: Optional[float] = None):
     """Factory for the configured image-rendering backend. All three
-    expose the same `.generate_image(prompt, negative_prompt="") -> bytes`
-    interface. Provider chosen entirely by settings.IMAGE_PROVIDER — no
-    code change needed to switch. Defaults to Freepik.
+    expose the same `.generate_image(prompt, negative_prompt="",
+    on_progress=None) -> bytes` interface. Provider chosen entirely by
+    settings.IMAGE_PROVIDER — no code change needed to switch. Defaults
+    to Freepik.
+
+    `poll_timeout_override`, if given, replaces FREEPIK_POLL_TIMEOUT for
+    this instance only (used by generate_variations_events() to keep a
+    single request's image phase inside its allotted budget without
+    changing the global default for the plain /api/generate path).
     """
     if settings.IMAGE_PROVIDER == "aws":
         return NovaCanvasService(
@@ -264,7 +302,7 @@ def get_image_gen_service():
         height=settings.IMAGE_HEIGHT,
         filter_nsfw=settings.FREEPIK_FILTER_NSFW,
         poll_interval=settings.FREEPIK_POLL_INTERVAL,
-        poll_timeout=settings.FREEPIK_POLL_TIMEOUT,
+        poll_timeout=poll_timeout_override if poll_timeout_override is not None else settings.FREEPIK_POLL_TIMEOUT,
     )
 
 
@@ -282,6 +320,17 @@ def generate_variations(prompt: str, negative_prompt: str = "", count: int = 3) 
     instead of one after another. This is the single biggest latency win
     in the pipeline — three ~10-20s calls in series is 30-60s+; in
     parallel it's ~one call's worth of wall-clock time.
+
+    NOTE: this only raises if EVERY variation fails. If some succeed and
+    some don't (e.g. 1 of 3), it still logs an ERROR per failure below
+    but returns the shorter list quietly — the caller (the plain
+    /api/generate route) doesn't currently surface "you asked for 3, got
+    1" anywhere the user can see. If you're hitting fewer images than
+    requested, check these WARNING/ERROR log lines first — it's very
+    likely 2 of the 3 threads are failing (rate limit, Freepik timeout,
+    etc.), not a config issue. For live per-image status instead of
+    silent partial failure, use generate_variations_events() /
+    POST /api/generate/stream.
     """
     service = get_image_gen_service()
     results: List[Optional[bytes]] = [None] * count
@@ -303,4 +352,67 @@ def generate_variations(prompt: str, negative_prompt: str = "", count: int = 3) 
     images = [img for img in results if img is not None]
     if not images:
         raise RuntimeError(f"All {count} image variations failed: {'; '.join(errors)}")
+    if len(images) < count:
+        logger.warning(
+            "Only %d/%d image variations succeeded. Failures: %s",
+            len(images), count, "; ".join(errors),
+        )
     return images
+
+
+def generate_variations_events(
+    prompt: str,
+    negative_prompt: str = "",
+    count: int = 3,
+    deadline_seconds: Optional[float] = None,
+):
+    """Generator version of generate_variations() for streaming/SSE
+    consumers. Runs the same `count` parallel generate_image() calls, but
+    yields progress as it happens instead of blocking until everything's
+    done. Each yielded dict is one of:
+
+        {"type": "progress", "index": i, "status": "submitted"|"polling"|
+            "downloading", "detail": {...}}
+        {"type": "image", "index": i, "bytes": <bytes>}
+        {"type": "failed", "index": i, "error": "<message>"}
+
+    `deadline_seconds`, if given, bounds the Freepik provider's internal
+    poll_timeout for this call only (via get_image_gen_service's
+    poll_timeout_override) — this is what keeps a single request's image
+    phase inside a caller-defined time budget (e.g. so the whole request
+    finishes under 60s) without touching the global FREEPIK_POLL_TIMEOUT
+    default used elsewhere. Each variation still runs on its own thread
+    in parallel, same as generate_variations().
+    """
+    service = get_image_gen_service(poll_timeout_override=deadline_seconds)
+    events: "queue.Queue" = queue.Queue()
+    done_count = 0
+
+    def _make_progress_cb(i: int):
+        def _cb(status: str, detail: dict) -> None:
+            events.put({"type": "progress", "index": i, "status": status, "detail": detail})
+        return _cb
+
+    def _one(i: int) -> None:
+        try:
+            image_bytes = service.generate_image(
+                prompt, negative_prompt=negative_prompt, on_progress=_make_progress_cb(i)
+            )
+            events.put({"type": "image", "index": i, "bytes": image_bytes})
+        except Exception as exc:  # noqa: BLE001 - report and let others continue
+            logger.error("Image variation %d/%d failed: %s", i + 1, count, exc)
+            events.put({"type": "failed", "index": i, "error": str(exc)})
+
+    pool = ThreadPoolExecutor(max_workers=count)
+    for i in range(count):
+        pool.submit(_one, i)
+    pool.shutdown(wait=False)  # don't block; we drain via the queue below
+
+    # Each worker puts exactly one terminal event ("image" or "failed"),
+    # plus zero or more "progress" events along the way. Stop once we've
+    # seen `count` terminal events.
+    while done_count < count:
+        item = events.get()
+        yield item
+        if item["type"] in ("image", "failed"):
+            done_count += 1

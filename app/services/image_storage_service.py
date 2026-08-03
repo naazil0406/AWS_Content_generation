@@ -34,6 +34,21 @@ def _client():
     return _s3_client
 
 
+def _put_and_presign(client, image_bytes: bytes, generation_id: str, index: int) -> str:
+    key = f"generated/{generation_id}/{index}.png"
+    client.put_object(
+        Bucket=settings.GENERATED_IMAGES_BUCKET,
+        Key=key,
+        Body=image_bytes,
+        ContentType="image/png",
+    )
+    return client.generate_presigned_url(
+        "get_object",
+        Params={"Bucket": settings.GENERATED_IMAGES_BUCKET, "Key": key},
+        ExpiresIn=settings.S3_PRESIGNED_URL_EXPIRY,
+    )
+
+
 def upload_images_to_s3(images: List[bytes], generation_id: str = None) -> List[str]:
     """Upload each image to S3 under a unique key and return a presigned
     GET URL for each, valid for settings.S3_PRESIGNED_URL_EXPIRY seconds.
@@ -52,18 +67,7 @@ def upload_images_to_s3(images: List[bytes], generation_id: str = None) -> List[
     results: List[Optional[str]] = [None] * len(images)
 
     def _one(i: int, image_bytes: bytes) -> None:
-        key = f"generated/{generation_id}/{i}.png"
-        client.put_object(
-            Bucket=settings.GENERATED_IMAGES_BUCKET,
-            Key=key,
-            Body=image_bytes,
-            ContentType="image/png",
-        )
-        results[i] = client.generate_presigned_url(
-            "get_object",
-            Params={"Bucket": settings.GENERATED_IMAGES_BUCKET, "Key": key},
-            ExpiresIn=settings.S3_PRESIGNED_URL_EXPIRY,
-        )
+        results[i] = _put_and_presign(client, image_bytes, generation_id, i)
 
     # Uploads are independent per-image, so run them concurrently rather
     # than one after another — presigned-URL generation is a local HMAC
@@ -79,3 +83,24 @@ def upload_images_to_s3(images: List[bytes], generation_id: str = None) -> List[
                 raise RuntimeError(f"Failed to upload generated image to S3: {exc}") from exc
 
     return results
+
+
+def upload_single_image_to_s3(image_bytes: bytes, generation_id: str, index: int) -> str:
+    """Upload ONE image and return its presigned URL immediately, instead
+    of waiting for a whole batch (see upload_images_to_s3). Used by the
+    streaming endpoint (POST /api/generate/stream) so each image's URL
+    can be pushed to the client the moment that image finishes, rather
+    than waiting for all three. `index` must be unique per generation_id
+    (e.g. the image's position 0/1/2) — it's the S3 key suffix, so reusing
+    an index for two different images silently overwrites the first.
+    """
+    if not settings.GENERATED_IMAGES_BUCKET:
+        raise RuntimeError(
+            "GENERATED_IMAGES_BUCKET is not configured. Set it to the S3 "
+            "bucket name created by template.yaml for storing generated images."
+        )
+    try:
+        return _put_and_presign(_client(), image_bytes, generation_id, index)
+    except (ClientError, BotoCoreError) as exc:
+        logger.error("Failed to upload image %d to S3: %s", index, exc)
+        raise RuntimeError(f"Failed to upload generated image to S3: {exc}") from exc

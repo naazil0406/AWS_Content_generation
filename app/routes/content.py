@@ -1,13 +1,16 @@
 """API routes for AI Content Generation."""
 
+import json
 import logging
+import time
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 
 from app.config import settings
 from app.schemas.content import CONTENT_TYPES, GenerateContentRequest, GenerateContentResponse
 from app.services.content_generation_engine import ContentGenerationEngine, ContentGenerationError
-from app.services.image_generation_service import generate_variations
+from app.services.image_generation_service import generate_variations, generate_variations_events
 from app.services.image_storage_service import upload_images_to_s3
 from app.services.knowledge_base_service import KnowledgeBaseError, KnowledgeBaseService
 from app.services.llm_service import get_combined_llm
@@ -87,3 +90,135 @@ def generate(request: GenerateContentRequest) -> GenerateContentResponse:
         raise HTTPException(status_code=502, detail=f"Image upload failed: {exc}")
 
     return build_response(result, image_urls)
+
+
+def _sse(event: str, data: dict) -> str:
+    """Format one Server-Sent Event. Each event is `event: <name>` plus
+    a single `data: <json>` line, terminated by a blank line — SSE's
+    required framing. json.dumps with default=str so any stray
+    non-JSON-serializable value (shouldn't happen, but cheap insurance)
+    doesn't crash the whole stream mid-generation.
+    """
+    return f"event: {event}\ndata: {json.dumps(data, default=str)}\n\n"
+
+
+@router.post("/generate/stream")
+def generate_stream(request: GenerateContentRequest):
+    """Same pipeline as POST /generate (KB retrieve -> combined Nova Lite
+    call -> N parallel image renders -> S3 upload), but streamed as
+    Server-Sent Events so a frontend can show live per-image progress
+    instead of one long blocking spinner. Event sequence:
+
+        stage            {"stage": "retrieving_context"}
+        stage            {"stage": "generating_content"}
+        content_ready    {content_text, summary, tags, alt_text, image_prompt}
+        image_progress   {"index": i, "status": "submitted"|"polling"|"downloading", "detail": {...}}
+        image_ready      {"index": i, "url": "..."}
+        image_failed     {"index": i, "error": "..."}
+        warning          {"message": "..."}   (e.g. fewer images than requested)
+        done             {content: {...}, images: [url, ...]}   -- same shape as POST /generate
+        error             {"message": "..."}   -- terminal, stage failed
+
+    Timing budget: the whole request targets TOTAL_DEADLINE_SECONDS
+    (default 55s, under the common 60s ceiling). Whatever's left after
+    KB retrieval + the combined LLM call is what image generation gets
+    (floor: IMAGE_STREAM_MIN_DEADLINE_SECONDS), passed as a per-request
+    poll_timeout override to the image provider — see
+    generate_variations_events(). A slow/cold KB (e.g. Aurora resuming)
+    eats into this budget same as anything else; there's no way to
+    special-case that and still guarantee <60s total.
+
+    Note for local testing: EventSource (the browser's native SSE
+    client) only supports GET requests with no body, so this is a POST
+    endpoint meant to be consumed via fetch() + a manual
+    ReadableStream/TextDecoder read loop instead — see frontend/index.html
+    for a working example.
+    """
+    start = time.monotonic()
+
+    def event_stream():
+        try:
+            yield _sse("stage", {"stage": "retrieving_context"})
+            engine = ContentGenerationEngine(knowledge_base=KnowledgeBaseService(), llm=get_combined_llm())
+
+            yield _sse("stage", {"stage": "generating_content"})
+            try:
+                result = engine.generate(
+                    prompt=request.prompt,
+                    content_type=request.content_type,
+                    monthly_topic_content=request.monthly_topic_content,
+                    common_data=request.common_data,
+                    web_results=request.web_results,
+                    avoid_repeating=request.avoid_repeating,
+                )
+            except (ValueError, KnowledgeBaseError, ContentGenerationError) as exc:
+                yield _sse("error", {"message": str(exc)})
+                return
+
+            yield _sse("content_ready", {
+                "content_text": result["content_text"],
+                "summary": result.get("summary", ""),
+                "tags": result.get("tags", []),
+                "alt_text": result.get("alt_text", ""),
+                "image_prompt": result["image_prompt"],
+            })
+
+            # Whatever time is left of the total budget goes to image
+            # generation; S3 uploads are fast (~1-2s total, parallel) so
+            # they aren't given their own separate budget slice.
+            elapsed = time.monotonic() - start
+            remaining = settings.TOTAL_DEADLINE_SECONDS - elapsed
+            image_deadline = max(remaining, settings.IMAGE_STREAM_MIN_DEADLINE_SECONDS)
+
+            generation_id = None
+            image_urls: dict = {}
+            count = settings.IMAGE_VARIATIONS_COUNT
+            try:
+                for event in generate_variations_events(
+                    prompt=result["image_prompt"],
+                    negative_prompt=result.get("negative_prompt", ""),
+                    count=count,
+                    deadline_seconds=image_deadline,
+                ):
+                    if event["type"] == "progress":
+                        yield _sse("image_progress", {
+                            "index": event["index"], "status": event["status"], "detail": event["detail"],
+                        })
+                    elif event["type"] == "image":
+                        if generation_id is None:
+                            import uuid as _uuid
+                            generation_id = _uuid.uuid4().hex
+                        from app.services.image_storage_service import upload_single_image_to_s3
+                        try:
+                            url = upload_single_image_to_s3(event["bytes"], generation_id, event["index"])
+                            image_urls[event["index"]] = url
+                            yield _sse("image_ready", {"index": event["index"], "url": url})
+                        except Exception as exc:  # noqa: BLE001
+                            yield _sse("image_failed", {"index": event["index"], "error": f"Upload failed: {exc}"})
+                    elif event["type"] == "failed":
+                        yield _sse("image_failed", {"index": event["index"], "error": event["error"]})
+            except Exception as exc:  # noqa: BLE001 - image phase failed outright
+                yield _sse("error", {"message": f"Image generation failed: {exc}"})
+                return
+
+            if not image_urls:
+                yield _sse("error", {"message": "All image variations failed."})
+                return
+            if len(image_urls) < count:
+                yield _sse("warning", {
+                    "message": f"Only {len(image_urls)}/{count} image variation(s) succeeded.",
+                })
+
+            ordered_urls = [image_urls[i] for i in sorted(image_urls)]
+            response = build_response(result, ordered_urls)
+            yield _sse("done", response.model_dump())
+
+        except Exception as exc:  # noqa: BLE001 - last-resort so the stream always closes cleanly
+            logger.exception("Unexpected error during streamed content generation.")
+            yield _sse("error", {"message": f"Unexpected error: {exc}"})
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

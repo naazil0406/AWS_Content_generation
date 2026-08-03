@@ -145,6 +145,31 @@ h1 {
 }
 .image-card-download:hover { background: #f4efe1; }
 
+/* Live-progress image frame (used by the streaming /generate/stream path
+   while an individual image is still rendering) */
+.image-frame {
+  border: 2px dashed var(--paper-rule); border-radius: var(--radius); overflow: hidden;
+  background: #fbf8ef; position: relative; aspect-ratio: 1 / 1;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+}
+.image-frame.failed { border-color: var(--danger); background: #fbf1ee; }
+.image-frame .frame-spinner {
+  width: 26px; height: 26px; border: 3px solid rgba(184,134,43,0.25);
+  border-top-color: var(--gold); border-radius: 50%; animation: spin 0.8s linear infinite;
+}
+.image-frame .frame-status {
+  font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-text-soft); text-align: center; padding: 0 10px;
+}
+.image-frame .frame-status.failed { color: var(--danger); }
+
+.timer-row {
+  display: flex; align-items: center; gap: 10px; margin-top: 10px;
+  font-family: var(--font-mono); font-size: 12.5px; color: var(--ink-text-soft);
+}
+.timer-row .timer-value { font-weight: 600; }
+.timer-row .timer-value.warn { color: var(--gold-deep); }
+.timer-row .timer-value.over { color: var(--danger); }
+
 .section-hint { margin-top: 16px; cursor: pointer; text-decoration: underline; font-size: 13px; color: var(--ink-text-soft); }
 .prompt-text { font-size: 13px; color: var(--ink-text-soft); border-top: 1px solid var(--paper-rule); padding-top: 12px; margin-top: 12px; }
 </style>
@@ -178,6 +203,9 @@ h1 {
     </div>
 
     <button class="btn" id="generateBtn">Generate content + 3 images</button>
+    <div class="timer-row" id="timerRow" hidden>
+      Elapsed: <span class="timer-value" id="timerValue">0.0s</span> / target 60s
+    </div>
     <div class="status" id="generateStatus"></div>
   </div>
 
@@ -245,18 +273,172 @@ async function loadContentTypes() {
   }
 }
 
-function renderImages(imageUrls) {
-  // The backend now returns presigned S3 URLs, not base64 image data
-  // (kept the API response small enough to avoid Lambda/API Gateway
-  // payload-size limits) — so these are used directly as <img src>.
+// --- Live progress frames (streaming path — the only generation path now) ---
+function renderImageFrames(count) {
   const wrap = document.getElementById("images");
-  wrap.innerHTML = imageUrls.map((url, i) => `
-    <div class="image-card">
+  wrap.innerHTML = Array.from({ length: count }).map((_, i) => `
+    <div class="image-frame" id="frame-${i}">
       <span class="image-card-label">Option ${i + 1}</span>
-      <img src="${url}" alt="Generated image ${i + 1}" />
-      <a class="image-card-download" href="${url}" download="image-${i + 1}.png" target="_blank" rel="noopener">Download</a>
+      <div class="frame-spinner"></div>
+      <div class="frame-status" id="frame-status-${i}">Queued…</div>
     </div>
   `).join("");
+}
+
+function updateFrameStatus(index, status, detail) {
+  const el = document.getElementById(`frame-status-${index}`);
+  if (!el) return;
+  const label = {
+    submitted: "Submitted to image model…",
+    polling: detail && detail.attempt
+      ? `Rendering… attempt ${detail.attempt} (${detail.elapsed_seconds ?? "?"}s elapsed)`
+      : "Rendering…",
+    downloading: "Downloading finished image…",
+  }[status] || status;
+  el.textContent = label;
+}
+
+function markFrameReady(index, url) {
+  const frame = document.getElementById(`frame-${index}`);
+  if (!frame) return;
+  frame.outerHTML = `
+    <div class="image-card" id="frame-${index}">
+      <span class="image-card-label">Option ${index + 1}</span>
+      <img src="${url}" alt="Generated image ${index + 1}" />
+      <a class="image-card-download" href="${url}" download="image-${index + 1}.png" target="_blank" rel="noopener">Download</a>
+    </div>
+  `;
+}
+
+function markFrameFailed(index, errorMessage) {
+  const frame = document.getElementById(`frame-${index}`);
+  if (!frame) return;
+  frame.classList.add("failed");
+  frame.innerHTML = `
+    <span class="image-card-label">Option ${index + 1}</span>
+    <div class="frame-status failed">Failed: ${escapeHtml(errorMessage || "unknown error")}</div>
+  `;
+}
+
+// Parses a raw SSE text stream (fetch + ReadableStream, not the native
+// EventSource — EventSource can't send a POST body, and this endpoint
+// needs one) into { event, data } pairs. SSE frames are separated by a
+// blank line; a frame can span multiple reads, so unparsed text is kept
+// in `buffer` across calls.
+function makeSseParser(onEvent) {
+  let buffer = "";
+  return function feed(chunkText) {
+    buffer += chunkText;
+    const frames = buffer.split("\n\n");
+    buffer = frames.pop(); // last piece may be incomplete, keep it
+    for (const frame of frames) {
+      if (!frame.trim()) continue;
+      let eventName = "message";
+      let dataLine = "";
+      for (const line of frame.split("\n")) {
+        if (line.startsWith("event:")) eventName = line.slice(6).trim();
+        else if (line.startsWith("data:")) dataLine += line.slice(5).trim();
+      }
+      let data = {};
+      try { data = JSON.parse(dataLine); } catch (_) { /* ignore malformed frame */ }
+      onEvent(eventName, data);
+    }
+  };
+}
+
+async function generateContentStreaming(contentType, topic, statusEl, timerValueEl) {
+  const startedAt = performance.now();
+  let timerHandle = null;
+  const updateTimer = () => {
+    const secs = (performance.now() - startedAt) / 1000;
+    timerValueEl.textContent = `${secs.toFixed(1)}s`;
+    timerValueEl.className = "timer-value" + (secs > 60 ? " over" : secs > 45 ? " warn" : "");
+  };
+  timerHandle = setInterval(updateTimer, 200);
+  document.getElementById("timerRow").hidden = false;
+
+  renderImageFrames(3); // default count — adjusted if content_ready implies otherwise
+  document.getElementById("resultCard").hidden = false;
+  document.getElementById("resultTitle").textContent = contentType;
+  document.getElementById("contentText").textContent = "";
+  document.getElementById("resultTags").innerHTML = "";
+
+  try {
+    const res = await fetch("/api/generate/stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: topic, content_type: contentType }),
+    });
+    if (!res.ok || !res.body) {
+      const body = await res.json().catch(() => null);
+      throw new Error((body && body.detail) || res.statusText);
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let finalPayload = null;
+    let sawError = null;
+    let contentReceived = false;
+
+    const feed = makeSseParser((eventName, data) => {
+      switch (eventName) {
+        case "stage":
+          setStatus(statusEl, data.stage === "retrieving_context"
+            ? "Retrieving knowledge base context…"
+            : "Generating content…");
+          break;
+        case "content_ready":
+          contentReceived = true;
+          document.getElementById("contentText").textContent = data.content_text;
+          document.getElementById("resultTags").innerHTML = (data.tags || [])
+            .map((t) => `<span class="tag">${escapeHtml(t)}</span>`).join("");
+          document.getElementById("resultTitle").textContent =
+            data.summary ? `${contentType}: ${data.summary}` : contentType;
+          document.getElementById("imagePromptText").textContent = data.image_prompt || "";
+          setStatus(statusEl, "Content ready — generating 3 image variations…");
+          break;
+        case "image_progress":
+          updateFrameStatus(data.index, data.status, data.detail);
+          break;
+        case "image_ready":
+          markFrameReady(data.index, data.url);
+          break;
+        case "image_failed":
+          markFrameFailed(data.index, data.error);
+          break;
+        case "warning":
+          setStatus(statusEl, data.message, false);
+          break;
+        case "done":
+          finalPayload = data;
+          break;
+        case "error":
+          sawError = data.message || "Unknown error";
+          break;
+      }
+    });
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      feed(decoder.decode(value, { stream: true }));
+    }
+
+    if (sawError) {
+      const err = new Error(sawError);
+      err.earlyFailure = !contentReceived; // failed before any content streamed — safe to retry
+      throw err;
+    }
+    const secs = (performance.now() - startedAt) / 1000;
+    setStatus(statusEl, `Done in ${secs.toFixed(1)}s.`);
+    closeGenPanel();
+    document.getElementById("resultCard").scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (err) {
+    if (err.earlyFailure === undefined) err.earlyFailure = false; // e.g. fetch itself failed
+    throw err;
+  } finally {
+    clearInterval(timerHandle);
+  }
 }
 
 async function generateContent() {
@@ -270,64 +452,32 @@ async function generateContent() {
 
   document.getElementById("resultCard").hidden = true;
   btn.disabled = true;
-  setStatus(statusEl, "Generating content and 3 image variations — this can take a moment…");
 
-  const requestBody = JSON.stringify({ prompt: topic, content_type: contentType });
-  const MAX_WARMUP_RETRIES = 2; // Aurora's resume window is 15-30s; one
-                                // retry can land too early, so allow two.
-
-  try {
-    let result;
-    let attempt = 0;
-    while (true) {
-      try {
-        // Backend contract: POST /api/generate expects {prompt, content_type}
-        // and returns {content: {...}, images: [url, url, url]}
-        result = await api("/api/generate", { method: "POST", body: requestBody });
-        break;
-      } catch (err) {
-        attempt += 1;
-        if (err.status === 503 && attempt <= MAX_WARMUP_RETRIES) {
-          // Knowledge base's database is waking up from an idle pause —
-          // this is expected occasionally and clears itself in ~15-30s.
-          setStatus(
-            statusEl,
-            `Error (${err.status}): ${err.message} — retrying in ${err.retryAfter}s… (attempt ${attempt}/${MAX_WARMUP_RETRIES})`
-          );
-          await new Promise((r) => setTimeout(r, err.retryAfter * 1000));
-          setStatus(statusEl, "Retrying…");
-          continue;
-        }
-        throw err;
+  // Knowledge base retrieval can occasionally fail early (e.g. Aurora
+  // Serverless waking from an idle pause, ~15-30s) before any content
+  // has streamed back — that's the only case worth auto-retrying,
+  // since retrying after images have already started wastes the
+  // work that succeeded. generateContentStreaming() throws with
+  // `.earlyFailure = true` for exactly that case.
+  const MAX_RETRIES = 2;
+  let attempt = 0;
+  while (true) {
+    try {
+      await generateContentStreaming(contentType, topic, statusEl, document.getElementById("timerValue"));
+      break;
+    } catch (err) {
+      attempt += 1;
+      if (err.earlyFailure && attempt <= MAX_RETRIES) {
+        setStatus(statusEl, `Error: ${err.message} — retrying in 15s… (attempt ${attempt}/${MAX_RETRIES})`, true);
+        await new Promise((r) => setTimeout(r, 15000));
+        setStatus(statusEl, "Retrying…");
+        continue;
       }
+      setStatus(statusEl, `Error: ${err.message}`, true);
+      break;
     }
-
-    const { content, images } = result;
-
-    document.getElementById("resultTitle").textContent =
-      content.title ? `${contentType}: ${content.title}` : contentType;
-    document.getElementById("contentText").textContent = content.content;
-    document.getElementById("resultTags").innerHTML = (content.hashtags || [])
-      .map((t) => `<span class="tag">${escapeHtml(t)}</span>`).join("");
-
-    renderImages(images);
-
-    document.getElementById("imagePromptText").textContent = content.image_prompt || "";
-    document.getElementById("imagePromptText").hidden = true;
-    document.getElementById("imagePromptToggle").textContent = "Show image prompt ▾";
-
-    document.getElementById("resultCard").hidden = false;
-    setStatus(statusEl, `Done — ${images.length} image variation(s) generated.`);
-    closeGenPanel();
-    document.getElementById("resultCard").scrollIntoView({ behavior: "smooth", block: "start" });
-  } catch (err) {
-    const msg = err.status === 503
-      ? `Error (${err.status}): ${err.message} — still failing after retries, please try again shortly.`
-      : `Error${err.status ? ` (${err.status})` : ""}: ${err.message}`;
-    setStatus(statusEl, msg, true);
-  } finally {
-    btn.disabled = false;
   }
+  btn.disabled = false;
 }
 
 document.getElementById("openGenBtn").addEventListener("click", openGenPanel);

@@ -100,6 +100,18 @@ class Settings:
     S3_REGION: str = os.getenv("S3_REGION", os.getenv("AWS_REGION", "us-east-1"))
     S3_PRESIGNED_URL_EXPIRY: int = int(os.getenv("S3_PRESIGNED_URL_EXPIRY", "3600"))
 
+    # --- Streaming endpoint (/api/generate/stream) timing budget ---
+    # The whole request — KB retrieval + combined LLM call + N parallel
+    # image renders + S3 uploads — is budgeted to finish comfortably
+    # under a 60s target (matches typical API Gateway/browser tolerance
+    # for a single request). TOTAL_DEADLINE_SECONDS is the ceiling for
+    # the whole request; IMAGE_STREAM_MIN_DEADLINE_SECONDS is a floor so
+    # a slow KB/LLM stage never leaves images with an unreasonably short
+    # window. Whatever's left after KB+LLM is what image generation gets,
+    # clamped to this floor.
+    TOTAL_DEADLINE_SECONDS: float = float(os.getenv("TOTAL_DEADLINE_SECONDS", "55.0"))
+    IMAGE_STREAM_MIN_DEADLINE_SECONDS: float = float(os.getenv("IMAGE_STREAM_MIN_DEADLINE_SECONDS", "15.0"))
+
     # --- Retries (external API calls: KB, LLM, image provider) ---
     HTTP_MAX_RETRIES: int = int(os.getenv("HTTP_MAX_RETRIES", "3"))
     HTTP_BACKOFF_SECONDS: float = float(os.getenv("HTTP_BACKOFF_SECONDS", "1.5"))
