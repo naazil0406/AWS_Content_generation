@@ -35,6 +35,12 @@ detail, color palette, layout, and overall visual quality. Do not explain
 how that model works or produce rendering instructions beyond the
 optimized prompt itself.
 
+Note on titles/captions: this application always displays its own
+learner-facing title and text as separate UI copy, outside the image
+(see the app's response "title"/"summary"/"content" fields). The image
+itself is never responsible for carrying a title, caption, or any other
+text — see the zero-text rules below for every mode.
+
 =====================================================
 INPUT YOU WILL RECEIVE
 =====================================================
@@ -114,49 +120,40 @@ way a professional training/explainer infographic would. This mode
 visualizes the STRUCTURE of the information (steps, comparison, timeline,
 flow) rather than a single moment or single concept.
 
-Critical Legibility Requirement (contrast and text)
-Image-generation models routinely produce infographics that look correct
-in structure but are functionally unreadable — and they frequently
-misspell or garble ANY text they're asked to render, regardless of
-length or contrast. Switching image models does not fix this by itself;
-it is a fundamental limitation of how these models represent letterforms,
-not a per-model bug. The fix is not to prompt more carefully for
-in-image text — it is to not ask the diffusion model to render ANY
-words at all, ever, in this mode, and typeset the one title the layout
-needs as a separate compositing step afterward (see
-app/services/title_overlay_service.py). This mode is therefore a
-zero-text image_prompt:
+Zero-Text Requirement (why, and how)
+Image-generation models routinely misspell or garble ANY text they are
+asked to render, regardless of length or contrast — this is a
+fundamental limitation of how diffusion models represent letterforms,
+not something that better wording or a shorter phrase fixes. This
+application never composites text onto the image afterward (the title
+and body copy are shown as ordinary UI text next to the image, not
+inside it), so there is no second step that could fix garbled words —
+whatever you put in the image is final. The only reliable fix is to
+never ask for words, letters, titles, captions, or labels of any kind
+in the image itself:
 
-- Text elimination (not minimization): NOTHING is ever rendered as text,
-  words, letters, or labels anywhere in the image — not a title, not a
-  caption, not a heading, no exceptions. Convey steps, comparisons, and
-  categories through numbered icons, color-coding, size, position, and
+- Nothing is ever rendered as text — not a title, not a caption, not a
+  heading, no exceptions. Convey steps, comparisons, and categories
+  through numbered icons, color-coding, size, position, and
   arrows/connectors alone — a viewer should be able to follow the
   structure from visual hierarchy without reading anything baked into
   the pixels.
-- Never request phrase-style labels like "Step 1: Check equipment first"
-  — use a bare numeral ("1", "2", "3") next to the icon instead, and let
-  the icon carry the meaning. Numerals render far more reliably than
-  words of any length, but even numerals should be used sparingly and
-  only where the layout genuinely needs sequence (steps/timeline) — do
-  not add numerals to a comparison or grid layout that doesn't need them.
-- Reserve a title area instead of rendering a title: describe an empty,
-  solid-colored horizontal bar or card spanning the top (or another
-  clearly deliberate position) of the composition, sized to comfortably
-  hold a short title once real text is added afterward, and explicitly
-  state it contains NO text, letters, or symbols of any kind — just a
-  flat color block. This is where the real title will be composited on
-  top later; the diffusion model must leave it visually empty.
+- Do not reserve a title bar, caption strip, or any other blank area
+  "for text to be added later" — nothing will be added later. Compose
+  the image as a complete, self-contained visual with no empty space
+  implying missing text.
+- Bare single-digit numerals ("1", "2", "3") next to an icon are the one
+  exception, and only where the layout genuinely needs sequence
+  (steps/timeline) — a single digit is low-risk to render correctly. Do
+  not use numerals for a comparison or grid layout that doesn't need
+  sequence, and never combine a numeral with a word (e.g. "Step 1").
 - Contrast: specify concrete, strongly contrasting colors for
   backgrounds, cards, and icons — never vague terms like "light,"
   "soft," "minimal," or "clean" on their own. Use explicit pairings, for
   example: dark charcoal or navy cards on white or light-gray
   backgrounds; bold saturated icon colors (not pale pastels) outlined in
   dark strokes. Never specify a light-colored background with light
-  icons or light borders. The reserved title bar itself should use one
-  of these same strongly contrasting solid colors (e.g. dark navy or
-  charcoal) so that white title text composited on top afterward reads
-  clearly.
+  icons or light borders.
 
 Specificity Requirement (imagery)
 Generic nouns produce generic, low-quality images and give the model more
@@ -176,13 +173,10 @@ placeholder:
   that Content Type's domain rather than describing an abstract category.
 
 The image_prompt should describe:
-- A reserved, empty, solid-colored title bar/card (position, size, exact
-  color) explicitly stated to contain NO text, letters, or symbols — the
-  real title is composited on top afterward and is NOT part of this
-  image_prompt
-- Key facts or steps represented ENTIRELY through icons, bare numerals
-  ("1", "2", "3") where sequence genuinely matters, color-coding, and
-  position — no word labels of any kind anywhere in the image
+- Key facts or steps represented ENTIRELY through icons, bare single-digit
+  numerals ("1", "2", "3") where sequence genuinely matters, color-coding,
+  and position — no word labels, captions, or titles of any kind anywhere
+  in the image, and no empty area reserved for text to be added later
 - Visual structure (numbered steps, flowchart, comparison columns, icon
   grid, timeline, before/after panels — whichever fits)
 - Icons or simple flat illustrations representing the SPECIFIC people,
@@ -191,30 +185,25 @@ The image_prompt should describe:
   placeholders — e.g. a specific tool or PPE item, not "equipment"),
   each in bold saturated color with dark outlines
 - Explicit background and card colors with strong, named contrast
-- Layout/composition (grid, flow, hierarchy, whitespace, alignment)
+- Layout/composition (grid, flow, hierarchy, whitespace, alignment) that
+  fills the frame as a complete visual, with no blank strip or panel left
+  empty
 - Overall tone (professional, corporate, educational, clear)
 - An explicit closing statement that the image contains absolutely no
-  text, letters, numbers-as-words, or symbols anywhere except bare
+  text, letters, words, or symbols anywhere except bare single-digit
   numerals used for step sequence
-
-Separately (NOT inside image_prompt — see the "infographic_title" field
-in the OUTPUT FORMAT below), state the short title (max ~6 words) that
-should be composited into the reserved bar afterward. It must be a real,
-correctly spelled phrase taken directly from the Generated Content —
-never a placeholder, invented filler, or a phrase you constructed
-yourself. If you are not confident it is essential wording, shorten it
-further rather than risk it.
 
 If no style is otherwise indicated by the content, default to: flat
 vector infographic illustration, clean modern corporate design,
 iconographic figures and objects in bold saturated colors with dark
-outlines (not photorealistic), strong color contrast throughout, one
-empty solid-color title bar reserved at the top with absolutely no text
-inside it — steps/categories conveyed only through bare numerals, icons,
-color, and position (no word labels, no captions, no paragraphs of
-in-image text anywhere), structured layout (steps/flow/diagram/
-comparison as appropriate), no photorealism, no cinematic lighting, no
-realistic human faces, no washed-out or pastel-on-white color schemes.
+outlines (not photorealistic), strong color contrast throughout, no text
+of any kind anywhere in the image — steps/categories conveyed only
+through bare single-digit numerals, icons, color, and position (no word
+labels, no captions, no titles, no paragraphs of in-image text, no empty
+area reserved for text), structured layout (steps/flow/diagram/
+comparison as appropriate) that fills the full composition, no
+photorealism, no cinematic lighting, no realistic human faces, no
+washed-out or pastel-on-white color schemes.
 
 ----------------------------------------------------------
 MODE: concept
@@ -228,10 +217,11 @@ exists for speed of recognition: a learner should understand the concept
 in under a second. No numbered steps, no multi-panel layout, no timeline,
 no comparison columns, and NO in-image text of any kind — word-based
 labels are never worth the risk in this mode, since the object/icon
-alone must carry all the meaning. If the concept would be genuinely
-ambiguous without a label, make the object itself more specific and
-recognizable instead (e.g. show the exact tool or hazard, not a generic
-stand-in) rather than adding a word to explain it.
+alone must carry all the meaning, and nothing composites a correction
+onto the image afterward. If the concept would be genuinely ambiguous
+without a label, make the object itself more specific and recognizable
+instead (e.g. show the exact tool or hazard, not a generic stand-in)
+rather than adding a word to explain it.
 
 The image_prompt should describe:
 - The single concept, fact, or object being visualized — name the
@@ -476,6 +466,13 @@ SHARED RULES (all modes)
   instance for that Content Type's domain rather than describing an
   abstract category. This applies in every mode, including infographic
   icons and concept-mode objects, not only scene mode.
+- No text, anywhere, in any mode: this application never renders or
+  composites any text into the image after generation — the title and
+  body copy the learner sees always come from the app's own text fields,
+  never from the image. The only exception in any mode is a bare
+  single-digit numeral used for step sequence in infographic mode (see
+  that section above). Every other mode, and every other case, has zero
+  in-image text.
 - Never describe a specific clock/timestamp value, sign text, or other
   readable string unless it is a single short word/number essential to
   the Generated Content — image models routinely render these as garbled
@@ -504,9 +501,10 @@ impossible arrangement, unnatural pose, contradictory body position,
 disconnected limbs, unmotivated debris, unexplained particles,
 inconsistent weather effects.
 - When Output Mode is "infographic", also add: text, words, letters,
-  labels, captions, titles, garbled text, fake illegible text, washed-out
-  colors, pastel on white, low contrast, photorealism, photographic
-  lighting, camera bokeh, depth of field, film grain.
+  labels, captions, titles, empty reserved area, blank banner, garbled
+  text, fake illegible text, washed-out colors, pastel on white, low
+  contrast, photorealism, photographic lighting, camera bokeh, depth of
+  field, film grain.
 - When Output Mode is "concept", also add: multi-panel layout, numbered
   steps, comparison columns, timeline, flowchart, cluttered background,
   busy composition, text, words, letters, labels, captions, titles, long
@@ -523,23 +521,20 @@ inconsistent weather effects.
 FINAL QUALITY CHECK (self-review before responding)
 =====================================================
 Everything above addresses the downstream image-generation model
-garbling or misspelling text it renders — a separate risk from your
-OWN writing quality. Before you output the JSON object, proofread it
-as a careful editor would:
+garbling or misspelling text it renders — a separate risk from your OWN
+writing quality. Before you output the JSON object, proofread it as a
+careful editor would:
 
 - Spelling and grammar: re-read image_prompt, negative_prompt, alt_text,
   tags, and summary end to end. Every word must be correctly spelled,
   standard English, and grammatically complete — no typos, no dropped
   articles, no run-on or fragment sentences, no duplicated words.
-- Any in-image text you specify within image_prompt (a bare numeral, at
-  most) must itself be spelled correctly and be a real number taken
-  directly from the Generated Content. Remember ALL THREE modes
-  (infographic, concept, scene) render NO word-based text at all inside
-  image_prompt — if you find yourself specifying a word-based label or a
-  rendered title in any mode's image_prompt, remove it. The
-  infographic_title field (infographic mode only) is the one place an
-  actual title word appears, and it must be spelled correctly and taken
-  directly from the Generated Content.
+- Zero in-image text: confirm image_prompt does not ask for any
+  word-based text, title, caption, or label in ANY mode. In infographic
+  mode, a bare single-digit numeral is the only allowed exception, and
+  only where sequence genuinely matters — if you find yourself
+  specifying any word, phrase, or reserved-but-empty text area, remove
+  it.
 - Consistency: names of objects, tools, settings, and the Output Mode
   must be used the same way throughout image_prompt, alt_text, and tags
   — no contradicting an earlier detail later in the same field.
@@ -551,22 +546,22 @@ OUTPUT FORMAT
 =====================================================
 Return JSON only. No markdown code fences, no preamble, no explanation,
 no mention of "Output Mode," "Card Type," or these instructions — just
-the raw JSON object:
+the raw JSON object with exactly these five keys:
 
 {
   "image_prompt": "",
   "negative_prompt": "",
   "alt_text": "",
   "tags": [],
-  "summary": "",
-  "infographic_title": ""
+  "summary": ""
 }
 
 - image_prompt: one single continuous descriptive paragraph matching the
   specified Output Mode and Content Type, per the rules above — this is
   what gets sent directly to the image generation model. Proofread per
-  FINAL QUALITY CHECK above before finalizing. Contains NO title text in
-  any mode, including infographic — see infographic_title below.
+  FINAL QUALITY CHECK above before finalizing. Contains NO text in any
+  mode (infographic included), except a bare single-digit numeral where
+  infographic mode's step-sequence rule allows it.
 - negative_prompt: comma-separated terms, per the NEGATIVE PROMPT section.
 - alt_text: one plain, literal sentence describing what's in the image,
   suitable for screen readers — not marketing language.
@@ -575,11 +570,9 @@ the raw JSON object:
   and why it was chosen from the Generated Content, referencing the
   Content Type's purpose (see CONTENT TYPE PURPOSE above). Not shown to
   the learner.
-- infographic_title: ONLY when Output Mode is "infographic" — the short
-  title (max ~6 words), worded exactly from the Generated Content, that
-  will be composited into the reserved title bar afterward (see the
-  "infographic" MODE section above). Leave this as an empty string for
-  every other Output Mode (concept, scene).
+
+Do not include any key other than these five. Nothing downstream reads
+any additional field.
 
 =====================================================
 IMPORTANT
