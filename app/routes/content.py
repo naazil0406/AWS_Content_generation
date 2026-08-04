@@ -21,17 +21,13 @@ router = APIRouter()
 
 
 def _build_engine() -> ContentGenerationEngine:
-    """Construct the engine with fresh provider instances per request.
-    Providers are cheap to construct (HTTP/boto3 clients only), so no
-    caching is needed in a Lambda's short-lived execution context.
+    """Construct the engine with separate Content LLM and Image Prompt LLM instances."""
+    from app.services.llm_service import get_content_llm, get_image_prompt_llm
 
-    Content generation and image-prompt generation now share one LLM
-    call (get_combined_llm) instead of two sequential ones — see
-    ContentGenerationEngine and llm_service.generate_combined_package.
-    """
     return ContentGenerationEngine(
         knowledge_base=KnowledgeBaseService(),
-        llm=get_combined_llm(),
+        content_llm=get_content_llm(),
+        image_prompt_llm=get_image_prompt_llm(),
     )
 
 
@@ -139,7 +135,7 @@ def generate_stream(request: GenerateContentRequest):
     def event_stream():
         try:
             yield _sse("stage", {"stage": "retrieving_context"})
-            engine = ContentGenerationEngine(knowledge_base=KnowledgeBaseService(), llm=get_combined_llm())
+            engine = _build_engine()
 
             yield _sse("stage", {"stage": "generating_content"})
             try:
