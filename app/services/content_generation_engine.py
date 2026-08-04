@@ -107,19 +107,28 @@ class ContentGenerationEngine:
             logger.error("Knowledge Base retrieval failed: %s", exc)
             raise ContentGenerationError("Failed to retrieve context from the Knowledge Base.") from exc
 
-        # 3. Parallel Execution: Run Content Generation LLM and Image Prompt LLM concurrently!
-        # Both LLM calls fire simultaneously, cutting total LLM wait time from ~5s down to ~2.5s.
-        from concurrent.futures import ThreadPoolExecutor
-
+        # 3. Sequential Execution: the Image Prompt Generation Agent's whole
+        # job is to turn the ALREADY-GENERATED content into an image prompt
+        # (see prompts/image_prompt_system.txt — "content is the image's
+        # single source of truth"). That means it must run AFTER content
+        # generation completes and must receive content_text, not the raw
+        # topic. Running these two calls in parallel (as a prior version of
+        # this method did, passing `topic` into the image-prompt call) broke
+        # that contract: the image prompt ended up generated blind from a
+        # one-line topic instead of from what the content actually says,
+        # producing images that don't match the generated content. If you
+        # need the latency back, use the combined single-call path
+        # (get_combined_llm() / generate_combined_package()) instead of
+        # reintroducing parallelism here.
         mode = image_mode_for_content_type(content_type)
         content_sys_prompt = load_content_generation_system_prompt()
         img_sys_prompt = load_image_prompt_system_prompt()
 
         daily_tip_focus = pick_daily_tip_focus() if content_type == "Daily Tip" else None
 
-        def _run_content():
+        try:
             if content_type == "Daily Tip":
-                return self._generate_daily_tip(
+                content_text = self._generate_daily_tip(
                     system_prompt=content_sys_prompt,
                     topic=topic,
                     context_chunks=context_chunks,
@@ -128,41 +137,37 @@ class ContentGenerationEngine:
                     avoid_repeating=avoid_repeating,
                     focus=daily_tip_focus,
                 )
-            return self.content_llm.generate_content(
-                system_prompt=content_sys_prompt,
-                content_type=content_type,
-                topic=topic,
-                context_chunks=context_chunks,
-                monthly_topic_content=monthly_topic_content,
-                common_data=common_data,
-                web_results=web_results,
-                daily_tip_focus=daily_tip_focus,
-                avoid_repeating=avoid_repeating,
-            )
-
-        def _run_image_prompt(content_hint: str):
-            return self.image_prompt_llm.generate_image_prompt_package(
-                system_prompt=img_sys_prompt,
-                content_type=content_type,
-                topic=topic,
-                generated_content=content_hint,
-                context_chunks=context_chunks,
-                mode=mode,
-            )
-
-        try:
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                f_content = executor.submit(_run_content)
-                f_image = executor.submit(_run_image_prompt, topic)
-
-                content_text = f_content.result()
-                image_package = f_image.result()
+            else:
+                content_text = self.content_llm.generate_content(
+                    system_prompt=content_sys_prompt,
+                    content_type=content_type,
+                    topic=topic,
+                    context_chunks=context_chunks,
+                    monthly_topic_content=monthly_topic_content,
+                    common_data=common_data,
+                    web_results=web_results,
+                    daily_tip_focus=daily_tip_focus,
+                    avoid_repeating=avoid_repeating,
+                )
         except Exception as exc:
-            logger.error("Parallel LLM generation failed: %s", exc)
-            raise ContentGenerationError("Failed to generate content or image prompt in parallel.") from exc
+            logger.error("Content generation failed: %s", exc)
+            raise ContentGenerationError("Failed to generate content.") from exc
 
         if not content_text.strip():
             raise ContentGenerationError("Generated content was empty.")
+
+        try:
+            image_package = self.image_prompt_llm.generate_image_prompt_package(
+                system_prompt=img_sys_prompt,
+                content_type=content_type,
+                topic=topic,
+                generated_content=content_text,
+                context_chunks=context_chunks,
+                mode=mode,
+            )
+        except Exception as exc:
+            logger.error("Image prompt generation failed: %s", exc)
+            raise ContentGenerationError("Failed to generate image prompt from content.") from exc
 
         if not image_package.get("image_prompt", "").strip():
             raise ContentGenerationError("Generated image prompt was empty.")
