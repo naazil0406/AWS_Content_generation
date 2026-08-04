@@ -91,6 +91,11 @@ class FreepikImageService:
         "flux-dev": "https://api.freepik.com/v1/ai/text-to-image/flux-dev",
         "hyperflux": "https://api.freepik.com/v1/ai/text-to-image/hyperflux",
         "seedream-v4": "https://api.freepik.com/v1/ai/text-to-image/seedream-v4",
+        # Seedream 4.5 — ByteDance's model, marketed specifically for
+        # "superior typography and text rendering" vs earlier models.
+        # Selected purely via FREEPIK_MODEL=seedream-v4-5 (env var) — no
+        # other code path changes, same as every other Freepik model here.
+        "seedream-v4-5": "https://api.freepik.com/v1/ai/text-to-image/seedream-v4-5",
     }
     _MYSTIC_URL = "https://api.freepik.com/v1/ai/mystic"
 
