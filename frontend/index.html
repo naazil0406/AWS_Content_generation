@@ -38,9 +38,22 @@ html, body {
 button { font-family: inherit; cursor: pointer; }
 
 .wrap {
-  max-width: 900px;
+  max-width: 1100px;
   margin: 0 auto;
   padding: 40px 24px 80px;
+}
+
+.layout {
+  display: flex;
+  align-items: flex-start;
+  gap: 28px;
+}
+.main-col { flex: 1 1 auto; min-width: 0; }
+.side-col { flex: 0 0 320px; width: 320px; }
+
+@media (max-width: 820px) {
+  .layout { flex-direction: column; }
+  .side-col { width: 100%; flex-basis: auto; order: -1; }
 }
 
 .header { margin-bottom: 28px; }
@@ -169,53 +182,109 @@ h1 {
 
 .section-hint { margin-top: 16px; cursor: pointer; text-decoration: underline; font-size: 13px; color: var(--ink-text-soft); }
 .prompt-text { font-size: 13px; color: var(--ink-text-soft); border-top: 1px solid var(--paper-rule); padding-top: 12px; margin-top: 12px; }
+
+/* --- Campaign Documents upload card --- */
+.btn-secondary {
+  background: #fff; color: var(--ink-soft); border: 1px solid var(--paper-rule);
+}
+.btn-secondary:hover { background: var(--paper); }
+
+.upload-dropzone {
+  border: 2px dashed var(--paper-rule); border-radius: var(--radius);
+  padding: 28px 16px; text-align: center; transition: border-color 0.15s ease, background 0.15s ease;
+}
+.upload-dropzone.dragover { border-color: var(--gold); background: #fbf6e8; }
+.upload-dropzone-text { margin: 0 0 12px; font-size: 13.5px; color: var(--ink-text-soft); }
+.upload-formats {
+  margin: 12px 0 0; font-family: var(--font-mono); font-size: 11px;
+  color: var(--ink-text-soft); letter-spacing: 0.04em; text-transform: uppercase;
+}
+
+.upload-file-list { list-style: none; padding: 0; margin: 14px 0 0; font-size: 13px; }
+.upload-file-list li {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 7px 12px; border: 1px solid var(--paper-rule); border-radius: 6px;
+  margin-bottom: 6px; background: #fff;
+}
+.upload-file-list .file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.upload-file-list .remove-file {
+  background: none; border: none; color: var(--danger); font-size: 15px; line-height: 1;
+  padding: 0 4px; flex-shrink: 0;
+}
+
+.upload-card .btn { margin-top: 16px; }
 </style>
 </head>
 <body>
 <div class="wrap">
+<div class="layout">
 
-  <div class="header">
-    <p class="eyebrow">AI Content Generation</p>
-    <h1>Generate learning content + images</h1>
-    <p class="sub">Content Type + Topic in — original text and 3 image variations out.</p>
-  </div>
+  <div class="main-col">
 
-  <div class="gen-trigger-row">
-    <button class="btn" id="openGenBtn">+ Generate Content</button>
-  </div>
-
-  <div class="gen-panel" id="genPanel">
-    <div class="gen-panel-header">
-      <p class="gen-panel-title">New content generation</p>
-      <button class="gen-panel-close" id="closeGenBtn" aria-label="Close">&times;</button>
+    <div class="header">
+      <p class="eyebrow">AI Content Generation</p>
+      <h1>Generate learning content + images</h1>
+      <p class="sub">Content Type + Topic in — original text and 3 image variations out.</p>
     </div>
 
-    <div class="field">
-      <label for="contentType">Content Type</label>
-      <select id="contentType"></select>
-    </div>
-    <div class="field">
-      <label for="topic">Topic / Prompt</label>
-      <textarea id="topic" placeholder="Describe what you want generated, e.g. 'Heat Safety Awareness for warehouse workers during summer months'"></textarea>
+    <div class="gen-trigger-row">
+      <button class="btn" id="openGenBtn">+ Generate Content</button>
     </div>
 
-    <button class="btn" id="generateBtn">Generate content + 3 images</button>
-    <div class="timer-row" id="timerRow" hidden>
-      Elapsed: <span class="timer-value" id="timerValue">0.0s</span> / target 60s
+    <div class="gen-panel" id="genPanel">
+      <div class="gen-panel-header">
+        <p class="gen-panel-title">New content generation</p>
+        <button class="gen-panel-close" id="closeGenBtn" aria-label="Close">&times;</button>
+      </div>
+
+      <div class="field">
+        <label for="contentType">Content Type</label>
+        <select id="contentType"></select>
+      </div>
+      <div class="field">
+        <label for="topic">Topic / Prompt</label>
+        <textarea id="topic" placeholder="Describe what you want generated, e.g. 'Heat Safety Awareness for warehouse workers during summer months'"></textarea>
+      </div>
+
+      <button class="btn" id="generateBtn">Generate content + 3 images</button>
+      <div class="timer-row" id="timerRow" hidden>
+        Elapsed: <span class="timer-value" id="timerValue">0.0s</span> / target 60s
+      </div>
+      <div class="status" id="generateStatus"></div>
     </div>
-    <div class="status" id="generateStatus"></div>
+
+    <div class="card" id="resultCard" hidden>
+      <p class="section-title" id="resultTitle"></p>
+      <div class="content-text" id="contentText"></div>
+
+      <div class="images" id="images"></div>
+
+      <div class="section-hint" id="imagePromptToggle">Show image prompt ▾</div>
+      <p class="prompt-text" id="imagePromptText" hidden></p>
+    </div>
+
   </div>
 
-  <div class="card" id="resultCard" hidden>
-    <p class="section-title" id="resultTitle"></p>
-    <div class="content-text" id="contentText"></div>
+  <div class="side-col">
+    <div class="card upload-card">
+      <p class="section-title">Campaign Documents</p>
+      <p class="sub" style="margin-bottom:16px;">Upload campaign documents to improve AI-generated content using Amazon Bedrock Knowledge Base.</p>
 
-    <div class="images" id="images"></div>
+      <div class="upload-dropzone" id="uploadDropzone">
+        <p class="upload-dropzone-text">Drag files here, or</p>
+        <button class="btn btn-secondary" id="chooseFilesBtn" type="button">Choose Files</button>
+        <input type="file" id="fileInput" multiple accept=".pdf,.docx,.txt,.md" hidden />
+        <p class="upload-formats">PDF &middot; DOCX &middot; TXT &middot; MD</p>
+      </div>
 
-    <div class="section-hint" id="imagePromptToggle">Show image prompt ▾</div>
-    <p class="prompt-text" id="imagePromptText" hidden></p>
+      <ul class="upload-file-list" id="uploadFileList"></ul>
+
+      <button class="btn" id="uploadBtn" disabled>Upload Documents</button>
+      <div class="status" id="uploadStatus"></div>
+    </div>
   </div>
 
+</div>
 </div>
 
 <script>
@@ -471,6 +540,103 @@ async function generateContent() {
   }
   btn.disabled = false;
 }
+
+// --- Campaign Document Upload ---
+let selectedFiles = [];
+const UPLOAD_ALLOWED_EXTS = ["pdf", "docx", "txt", "md"];
+
+function uploadFileExtOk(name) {
+  const ext = (name.split(".").pop() || "").toLowerCase();
+  return UPLOAD_ALLOWED_EXTS.includes(ext);
+}
+
+function renderUploadFileList() {
+  const list = document.getElementById("uploadFileList");
+  list.innerHTML = selectedFiles.map((f, i) => `
+    <li>
+      <span class="file-name">${escapeHtml(f.name)}</span>
+      <button class="remove-file" data-index="${i}" aria-label="Remove ${escapeHtml(f.name)}">&times;</button>
+    </li>
+  `).join("");
+  document.getElementById("uploadBtn").disabled = selectedFiles.length === 0;
+  list.querySelectorAll(".remove-file").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      selectedFiles.splice(Number(btn.dataset.index), 1);
+      renderUploadFileList();
+    });
+  });
+}
+
+function addUploadFiles(fileListLike) {
+  const statusEl = document.getElementById("uploadStatus");
+  const rejected = [];
+  for (const f of Array.from(fileListLike)) {
+    if (!uploadFileExtOk(f.name)) { rejected.push(f.name); continue; }
+    selectedFiles.push(f);
+  }
+  renderUploadFileList();
+  if (rejected.length) {
+    setStatus(statusEl, `Unsupported file type(s) skipped: ${rejected.join(", ")}. Allowed: PDF, DOCX, TXT, MD.`, true);
+  }
+}
+
+const uploadDropzone = document.getElementById("uploadDropzone");
+const uploadFileInput = document.getElementById("fileInput");
+document.getElementById("chooseFilesBtn").addEventListener("click", () => uploadFileInput.click());
+uploadFileInput.addEventListener("change", (e) => {
+  addUploadFiles(e.target.files);
+  uploadFileInput.value = ""; // allow re-selecting the same file after removal
+});
+["dragenter", "dragover"].forEach((evt) => uploadDropzone.addEventListener(evt, (e) => {
+  e.preventDefault();
+  uploadDropzone.classList.add("dragover");
+}));
+["dragleave", "drop"].forEach((evt) => uploadDropzone.addEventListener(evt, (e) => {
+  e.preventDefault();
+  uploadDropzone.classList.remove("dragover");
+}));
+uploadDropzone.addEventListener("drop", (e) => {
+  if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
+    addUploadFiles(e.dataTransfer.files);
+  }
+});
+
+async function uploadCampaignDocuments() {
+  const statusEl = document.getElementById("uploadStatus");
+  const btn = document.getElementById("uploadBtn");
+  if (selectedFiles.length === 0) {
+    return setStatus(statusEl, "Select at least one file first.", true);
+  }
+
+  btn.disabled = true;
+  setStatus(statusEl, "Uploading…");
+
+  const formData = new FormData();
+  selectedFiles.forEach((f) => formData.append("files", f, f.name));
+
+  try {
+    const res = await fetch(API + "/api/upload", { method: "POST", body: formData });
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw new Error((body && body.detail) || res.statusText);
+
+    if (body.ingestion_started) {
+      setStatus(
+        statusEl,
+        "✓ Documents uploaded successfully. Knowledge Base ingestion has started. " +
+        "Your documents will be available for content generation once ingestion completes."
+      );
+    } else {
+      setStatus(statusEl, `Documents uploaded, but ingestion did not start: ${body.message}`, true);
+    }
+    selectedFiles = [];
+    renderUploadFileList();
+  } catch (err) {
+    setStatus(statusEl, `Error: ${err.message}`, true);
+    btn.disabled = selectedFiles.length === 0;
+  }
+}
+
+document.getElementById("uploadBtn").addEventListener("click", uploadCampaignDocuments);
 
 document.getElementById("openGenBtn").addEventListener("click", openGenPanel);
 document.getElementById("closeGenBtn").addEventListener("click", closeGenPanel);

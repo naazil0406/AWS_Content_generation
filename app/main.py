@@ -23,7 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from mangum import Mangum
 
-from app.routes import content
+from app.routes import content, upload
 from app.services.knowledge_base_service import KnowledgeBaseError, KnowledgeBaseService
 
 logger = logging.getLogger(__name__)
@@ -48,6 +48,7 @@ app.add_middleware(
 )
 
 app.include_router(content.router, prefix="/api")
+app.include_router(upload.router, prefix="/api")
 
 # Loaded once per Lambda cold start, reused across warm invocations.
 _FRONTEND_PATH = Path(__file__).resolve().parent.parent / "frontend" / "index.html"

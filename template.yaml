@@ -31,6 +31,22 @@ Parameters:
     Type: String
     NoEcho: true
     Default: ""
+  UploadBucketName:
+    Type: String
+    Description: >
+      S3 bucket containing the campaigns/ folder that feeds the Campaigns
+      Data Source. Can be the same bucket the existing data source already
+      uses (only the UploadPrefix folder is written to) or a separate one.
+  UploadPrefix:
+    Type: String
+    Default: campaigns/
+    Description: S3 prefix inside UploadBucketName that uploaded documents are written to.
+  UploadDataSourceId:
+    Type: String
+    Description: >
+      Data Source ID of the Campaigns Data Source (Bedrock console -> your
+      Knowledge Base -> Data sources -> Campaigns). NOT the existing data
+      source's ID — ingestion jobs are scoped to this ID only.
 
 Resources:
   ContentGenerationApi:
@@ -66,6 +82,9 @@ Resources:
           IMAGE_PROVIDER: !Ref ImageProvider
           FREEPIK_API_KEY: !Ref FreepikApiKey
           GENERATED_IMAGES_BUCKET: !Ref GeneratedImagesBucket
+          UPLOAD_BUCKET_NAME: !Ref UploadBucketName
+          UPLOAD_PREFIX: !Ref UploadPrefix
+          UPLOAD_DATA_SOURCE_ID: !Ref UploadDataSourceId
       Policies:
         - Statement:
             - Effect: Allow
@@ -82,6 +101,19 @@ Resources:
                 - s3:PutObject
                 - s3:GetObject
               Resource: !Sub "${GeneratedImagesBucket.Arn}/*"
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+              Resource: !Sub "arn:aws:s3:::${UploadBucketName}/${UploadPrefix}*"
+            - Effect: Allow
+              Action:
+                - bedrock-agent:StartIngestionJob
+                - bedrock-agent:GetIngestionJob
+              # Same Knowledge Base ARN as the bedrock:Retrieve statement above -
+              # this only grants ingestion control, and start_ingestion_job() is
+              # always called with UploadDataSourceId, so the existing data
+              # source is never targeted even though the ARN is KB-level.
+              Resource: !Sub "arn:aws:bedrock:${KnowledgeBaseRegion}:${AWS::AccountId}:knowledge-base/${KnowledgeBaseId}"
       Events:
         ApiEvent:
           Type: HttpApi

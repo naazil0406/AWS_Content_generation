@@ -5,6 +5,7 @@
 fastapi>=0.111.0,<1.0.0
 mangum>=0.17.0,<1.0.0
 pydantic>=2.6.0,<3.0.0
+python-multipart>=0.0.9,<1.0.0  # required by FastAPI to parse multipart/form-data (POST /api/upload)
 
 # --- HTTP client (Knowledge Base, Pollinations, Freepik) ---
 requests>=2.32.0,<3.0.0
