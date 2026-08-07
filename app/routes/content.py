@@ -74,9 +74,8 @@ def generate(request: GenerateContentRequest) -> GenerateContentResponse:
 
     try:
         images = generate_variations(
-            prompt=result["image_prompt"],
+            prompts=result["image_prompts"],
             negative_prompt=result["negative_prompt"],
-            count=settings.IMAGE_VARIATIONS_COUNT,
         )
     except Exception as exc:
         logger.error("Image generation failed: %s", exc)
@@ -107,9 +106,8 @@ def regenerate_image(request: RegenerateImageRequest) -> RegenerateImageResponse
     """
     try:
         images = generate_variations(
-            prompt=request.image_prompt,
+            prompts=[request.image_prompt],
             negative_prompt=request.negative_prompt or "",
-            count=1,
         )
     except Exception as exc:
         logger.error("Image regeneration failed: %s", exc)
@@ -147,7 +145,7 @@ def generate_stream(request: GenerateContentRequest):
 
         stage            {"stage": "retrieving_context"}
         stage            {"stage": "generating_content"}
-        content_ready    {content_text, summary, tags, alt_text, image_prompt, negative_prompt}
+        content_ready    {content_text, summary, tags, alt_text, image_prompts, negative_prompt}
         image_progress   {"index": i, "status": "submitted"|"polling"|"downloading", "detail": {...}}
         image_ready      {"index": i, "url": "..."}
         image_failed     {"index": i, "error": "..."}
@@ -196,7 +194,7 @@ def generate_stream(request: GenerateContentRequest):
                 "summary": result.get("summary", ""),
                 "tags": result.get("tags", []),
                 "alt_text": result.get("alt_text", ""),
-                "image_prompt": result["image_prompt"],
+                "image_prompts": result["image_prompts"],
                 "negative_prompt": result.get("negative_prompt", ""),
             })
 
@@ -209,12 +207,11 @@ def generate_stream(request: GenerateContentRequest):
 
             generation_id = None
             image_urls: dict = {}
-            count = settings.IMAGE_VARIATIONS_COUNT
+            count = len(result["image_prompts"])
             try:
                 for event in generate_variations_events(
-                    prompt=result["image_prompt"],
+                    prompts=result["image_prompts"],
                     negative_prompt=result.get("negative_prompt", ""),
-                    count=count,
                     deadline_seconds=image_deadline,
                 ):
                     if event["type"] == "progress":

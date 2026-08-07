@@ -175,7 +175,7 @@ h1 {
 .timer-row .timer-value.over { color: var(--danger); }
 
 .section-hint { margin-top: 16px; cursor: pointer; text-decoration: underline; font-size: 13px; color: var(--ink-text-soft); }
-.prompt-text { font-size: 13px; color: var(--ink-text-soft); border-top: 1px solid var(--paper-rule); padding-top: 12px; margin-top: 12px; }
+.prompt-text { font-size: 13px; color: var(--ink-text-soft); border-top: 1px solid var(--paper-rule); padding-top: 12px; margin-top: 12px; white-space: pre-wrap; }
 
 /* --- Regenerate --- */
 .regenerate-row {
@@ -408,7 +408,9 @@ async function generateContentStreaming(contentType, topic, statusEl, timerValue
           contentReceived = true;
           document.getElementById("contentText").textContent = data.content_text;
           document.getElementById("resultTitle").textContent = contentType;
-          document.getElementById("imagePromptText").textContent = data.image_prompt || "";
+          document.getElementById("imagePromptText").textContent = (data.image_prompts || [])
+            .map((p, i) => `Image ${i + 1}: ${p}`)
+            .join("\n\n");
           setStatus(statusEl, "Content ready — generating 3 image variations…");
           break;
         case "image_progress":

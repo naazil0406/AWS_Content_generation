@@ -97,20 +97,21 @@ _SCENE_NEGATIVE_PROMPT = (
     "titles, labels, watermarks, logos, low quality, blurry, distorted "
     "anatomy, extra limbs, misspelled text, garbled text, illegible text, typos"
 )
-# concept mode is neither photorealistic (like scene) nor a full multi-step
-# structured layout (like infographic) — a single centered icon/object
-# against a flat background, optionally with one short high-impact label,
-# so its fallback bans both extremes and the things that turn it into a
-# mini-infographic (steps, panels) without banning text/labels outright —
-# it instead guards against the text being wrong (misspelled/garbled).
+# concept mode now defaults to a single real photograph of one specific
+# object/hazard (not a full scene like scene mode, and not a multi-step
+# structured layout like infographic) — so its fallback no longer bans
+# photorealism. It instead guards against the two failure modes actually
+# seen in practice: multiple unrelated hazards/objects mashed into one
+# illogical scene, and busy/cluttered compositions that defeat the
+# "recognizable in under a second" goal of this mode.
 _CONCEPT_NEGATIVE_PROMPT = (
-    "photorealistic, realistic photo, photograph, cinematic lighting, "
-    "realistic human faces, realistic skin texture, depth of field, "
-    "camera bokeh, film grain, multi-panel layout, numbered steps, "
-    "comparison columns, timeline, flowchart, cluttered background, "
+    "multiple unrelated objects, combined hazards, mashed-together scene, "
+    "physically implausible combination, multi-panel layout, numbered "
+    "steps, comparison columns, timeline, flowchart, cluttered background, "
     "busy composition, long paragraphs of text, multiple text labels, "
     "narrative scene with multiple people, watermarks, logos, low quality, "
-    "blurry, misspelled text, garbled text, illegible text, typos"
+    "blurry, distorted anatomy, extra limbs, misspelled text, garbled "
+    "text, illegible text, typos"
 )
 
 

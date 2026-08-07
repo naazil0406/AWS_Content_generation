@@ -162,9 +162,16 @@ class BaseLLMService:
         suggested_industry: Optional[str] = None,
     ) -> dict:
         """Image Prompt Generation Agent: turn the already-generated
-        content into an image prompt + negative_prompt + alt_text + tags
-        + summary, per prompts/image_prompt_system.txt. Returns a dict
-        with those five keys.
+        content into THREE distinct image prompts (see OUTPUT FORMAT in
+        prompts/image_prompt_system.txt for how they're meant to vary —
+        different item/angle/moment per prompt, not three near-identical
+        restatements) + a shared negative_prompt + alt_text + tags +
+        summary. Returns a dict with:
+          image_prompts: List[str] — exactly 3 (or however many the model
+            returned; validated non-empty below) — one image is rendered
+            per entry.
+          negative_prompt, alt_text, tags, summary — same as before,
+            shared across all three images.
 
         suggested_industry: see build_image_prompt_request() — a
         fallback industry pick for generic content, not an override.
@@ -189,12 +196,21 @@ class BaseLLMService:
                 f"Raw response: {raw[:500]}"
             ) from exc
 
-        image_prompt = (data.get("image_prompt") or "").strip()
-        if not image_prompt:
-            raise RuntimeError("Image prompt generation returned an empty image_prompt.")
+        raw_prompts = data.get("image_prompts")
+        if not isinstance(raw_prompts, list):
+            # Backward-compat fallback: an older/uncooperative model might
+            # still return the singular "image_prompt" string this field
+            # replaced. Accept it as a single-element list rather than
+            # failing outright, since one valid image beats zero.
+            single = (data.get("image_prompt") or "").strip()
+            raw_prompts = [single] if single else []
+
+        image_prompts = [p.strip() for p in raw_prompts if isinstance(p, str) and p.strip()]
+        if not image_prompts:
+            raise RuntimeError("Image prompt generation returned no non-empty image_prompts.")
 
         return {
-            "image_prompt": image_prompt,
+            "image_prompts": image_prompts,
             "negative_prompt": (data.get("negative_prompt") or "").strip(),
             "alt_text": (data.get("alt_text") or "").strip(),
             "tags": data.get("tags") or [],

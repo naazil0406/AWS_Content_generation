@@ -311,22 +311,26 @@ def get_image_gen_service(poll_timeout_override: Optional[float] = None):
     )
 
 
-def generate_variations(prompt: str, negative_prompt: str = "", count: int = 3) -> List[bytes]:
-    """Generate `count` image variations from ONE optimized prompt, in
-    parallel. Each call goes to the same provider/model, which — being
-    stochastic — produces a distinct image per call; this is what gives
-    "exactly THREE image variations" from a single prompt. A failure on
-    one variation does not abort the others; if fewer than `count`
-    succeed, the caller decides whether that's acceptable.
+def generate_variations(prompts: List[str], negative_prompt: str = "") -> List[bytes]:
+    """Generate one image per prompt in `prompts`, in parallel. Unlike the
+    old "N variations of ONE prompt" design (which relied purely on the
+    image model's own randomness and tended to produce near-identical
+    images), each entry in `prompts` is expected to already be a distinct,
+    content-related prompt (see the Image Prompt Generation Agent's
+    "image_prompts" array in prompts/image_prompt_system.txt) — this
+    function's job is just to render each one, not to introduce variety
+    itself. A failure on one image does not abort the others; if fewer
+    than len(prompts) succeed, the caller decides whether that's
+    acceptable.
 
     Each generate_image() call is a blocking network round-trip (and, for
     polling providers like Freepik, several round-trips) with no shared
-    state between variations, so they run concurrently on a thread pool
+    state between images, so they run concurrently on a thread pool
     instead of one after another. This is the single biggest latency win
     in the pipeline — three ~10-20s calls in series is 30-60s+; in
     parallel it's ~one call's worth of wall-clock time.
 
-    NOTE: this only raises if EVERY variation fails. If some succeed and
+    NOTE: this only raises if EVERY image fails. If some succeed and
     some don't (e.g. 1 of 3), it still logs an ERROR per failure below
     but returns the shorter list quietly — the caller (the plain
     /api/generate route) doesn't currently surface "you asked for 3, got
@@ -338,11 +342,12 @@ def generate_variations(prompt: str, negative_prompt: str = "", count: int = 3) 
     POST /api/generate/stream.
     """
     service = get_image_gen_service()
+    count = len(prompts)
     results: List[Optional[bytes]] = [None] * count
     errors: List[str] = []
 
     def _one(i: int) -> None:
-        results[i] = service.generate_image(prompt, negative_prompt=negative_prompt)
+        results[i] = service.generate_image(prompts[i], negative_prompt=negative_prompt)
 
     with ThreadPoolExecutor(max_workers=count) as pool:
         futures = {pool.submit(_one, i): i for i in range(count)}
@@ -351,28 +356,28 @@ def generate_variations(prompt: str, negative_prompt: str = "", count: int = 3) 
             try:
                 future.result()
             except Exception as exc:  # noqa: BLE001 - collect and continue
-                logger.error("Image variation %d/%d failed: %s", i + 1, count, exc)
+                logger.error("Image %d/%d failed: %s", i + 1, count, exc)
                 errors.append(str(exc))
 
     images = [img for img in results if img is not None]
     if not images:
-        raise RuntimeError(f"All {count} image variations failed: {'; '.join(errors)}")
+        raise RuntimeError(f"All {count} images failed: {'; '.join(errors)}")
     if len(images) < count:
         logger.warning(
-            "Only %d/%d image variations succeeded. Failures: %s",
+            "Only %d/%d images succeeded. Failures: %s",
             len(images), count, "; ".join(errors),
         )
     return images
 
 
 def generate_variations_events(
-    prompt: str,
+    prompts: List[str],
     negative_prompt: str = "",
-    count: int = 3,
     deadline_seconds: Optional[float] = None,
 ):
     """Generator version of generate_variations() for streaming/SSE
-    consumers. Runs the same `count` parallel generate_image() calls, but
+    consumers. Runs the same len(prompts) parallel generate_image() calls
+    (one per distinct prompt — see generate_variations() above), but
     yields progress as it happens instead of blocking until everything's
     done. Each yielded dict is one of:
 
@@ -386,10 +391,11 @@ def generate_variations_events(
     poll_timeout_override) — this is what keeps a single request's image
     phase inside a caller-defined time budget (e.g. so the whole request
     finishes under 60s) without touching the global FREEPIK_POLL_TIMEOUT
-    default used elsewhere. Each variation still runs on its own thread
-    in parallel, same as generate_variations().
+    default used elsewhere. Each image still runs on its own thread in
+    parallel, same as generate_variations().
     """
     service = get_image_gen_service(poll_timeout_override=deadline_seconds)
+    count = len(prompts)
     events: "queue.Queue" = queue.Queue()
     done_count = 0
 
@@ -401,11 +407,11 @@ def generate_variations_events(
     def _one(i: int) -> None:
         try:
             image_bytes = service.generate_image(
-                prompt, negative_prompt=negative_prompt, on_progress=_make_progress_cb(i)
+                prompts[i], negative_prompt=negative_prompt, on_progress=_make_progress_cb(i)
             )
             events.put({"type": "image", "index": i, "bytes": image_bytes})
         except Exception as exc:  # noqa: BLE001 - report and let others continue
-            logger.error("Image variation %d/%d failed: %s", i + 1, count, exc)
+            logger.error("Image %d/%d failed: %s", i + 1, count, exc)
             events.put({"type": "failed", "index": i, "error": str(exc)})
 
     pool = ThreadPoolExecutor(max_workers=count)

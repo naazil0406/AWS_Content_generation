@@ -98,7 +98,7 @@ class ContentGenerationEngine:
           converge on the same industry. Optional — a one-off generation
           doesn't need it.
 
-        Returns a dict with keys: content_text, image_prompt,
+        Returns a dict with keys: content_text, image_prompts,
         negative_prompt, alt_text, tags, summary, context_chunks,
         daily_tip_focus, suggested_industry.
         """
@@ -181,15 +181,15 @@ class ContentGenerationEngine:
             logger.error("Image prompt generation failed: %s", exc)
             raise ContentGenerationError("Failed to generate image prompt from content.") from exc
 
-        if not image_package.get("image_prompt", "").strip():
-            raise ContentGenerationError("Generated image prompt was empty.")
+        if not image_package.get("image_prompts"):
+            raise ContentGenerationError("Generated image prompt list was empty.")
 
         # Fall back to mode-specific fixed negative prompt if model returned an empty string.
         negative_prompt = image_package.get("negative_prompt", "").strip() or negative_prompt_for_mode(mode)
 
         return {
             "content_text": content_text,
-            "image_prompt": image_package["image_prompt"],
+            "image_prompts": image_package["image_prompts"],
             "negative_prompt": negative_prompt,
             "alt_text": image_package.get("alt_text", ""),
             "tags": image_package.get("tags", []),

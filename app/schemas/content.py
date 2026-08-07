@@ -50,7 +50,17 @@ class GeneratedContent(BaseModel):
     content: str
     hashtags: List[str] = []
     cta: str = ""
-    image_prompt: str
+    image_prompt: str = Field(
+        default="",
+        description="Deprecated — kept for backward compatibility, equal to image_prompts[0]. "
+        "Use image_prompts for the full set of (up to) three distinct prompts, one per "
+        "generated image.",
+    )
+    image_prompts: List[str] = Field(
+        default_factory=list,
+        description="One distinct image prompt per generated image variation — see "
+        "prompts/image_prompt_system.txt's OUTPUT FORMAT for how the three are meant to vary.",
+    )
 
 
 class GenerateContentResponse(BaseModel):
