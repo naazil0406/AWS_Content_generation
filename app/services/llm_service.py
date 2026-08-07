@@ -159,11 +159,15 @@ class BaseLLMService:
         generated_content: str,
         context_chunks: List[dict],
         mode: str,
+        suggested_industry: Optional[str] = None,
     ) -> dict:
         """Image Prompt Generation Agent: turn the already-generated
         content into an image prompt + negative_prompt + alt_text + tags
         + summary, per prompts/image_prompt_system.txt. Returns a dict
         with those five keys.
+
+        suggested_industry: see build_image_prompt_request() — a
+        fallback industry pick for generic content, not an override.
         """
         from app.services.prompt_builder import build_image_prompt_request
 
@@ -173,6 +177,7 @@ class BaseLLMService:
             generated_content=generated_content,
             context_chunks=context_chunks,
             mode=mode,
+            suggested_industry=suggested_industry,
         )
         raw = _strip_code_fences(self._call_llm(system_prompt, user_prompt).strip())
 

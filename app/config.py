@@ -86,7 +86,7 @@ class Settings:
     POLLINATIONS_BASE_URL: str = os.getenv("POLLINATIONS_BASE_URL", "https://image.pollinations.ai/prompt")
 
     FREEPIK_API_KEY: str = os.getenv("FREEPIK_API_KEY", "").strip()
-    FREEPIK_MODEL: str = os.getenv("FREEPIK_MODEL", "realism")
+    FREEPIK_MODEL: str = os.getenv("FREEPIK_MODEL", "")
     FREEPIK_RESOLUTION: str = os.getenv("FREEPIK_RESOLUTION", "2k")
     FREEPIK_FILTER_NSFW: bool = os.getenv("FREEPIK_FILTER_NSFW", "true").strip().lower() == "true"
     FREEPIK_POLL_INTERVAL: float = float(os.getenv("FREEPIK_POLL_INTERVAL", "3.0"))
@@ -115,6 +115,19 @@ class Settings:
     # --- Retries (external API calls: KB, LLM, image provider) ---
     HTTP_MAX_RETRIES: int = int(os.getenv("HTTP_MAX_RETRIES", "3"))
     HTTP_BACKOFF_SECONDS: float = float(os.getenv("HTTP_BACKOFF_SECONDS", "1.5"))
+
+    # --- Campaign Document Upload (new Bedrock KB Data Source) ---
+    # Uploaded files land in this S3 prefix, then trigger an ingestion job
+    # scoped ONLY to UPLOAD_DATA_SOURCE_ID. The existing data source in
+    # the same Knowledge Base (KNOWLEDGE_BASE_ID above) is never touched
+    # by this — see app/services/ingestion_service.py. Once ingestion
+    # completes, uploaded documents are automatically retrievable through
+    # the existing KnowledgeBaseService.retrieve() with zero code changes
+    # there, since Bedrock KB retrieval searches across all data sources
+    # in a Knowledge Base.
+    UPLOAD_BUCKET_NAME: str = os.getenv("UPLOAD_BUCKET_NAME", "")
+    UPLOAD_PREFIX: str = os.getenv("UPLOAD_PREFIX", "campaigns/")
+    UPLOAD_DATA_SOURCE_ID: str = os.getenv("UPLOAD_DATA_SOURCE_ID", "")
 
     # --- Logging ---
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")

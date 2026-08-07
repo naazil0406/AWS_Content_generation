@@ -29,6 +29,7 @@ from app.services.prompt_builder import (
     load_image_prompt_system_prompt,
     negative_prompt_for_mode,
     pick_daily_tip_focus,
+    pick_industry,
 )
 
 logger = logging.getLogger(__name__)
@@ -79,6 +80,7 @@ class ContentGenerationEngine:
         common_data: Optional[str] = None,
         web_results: Optional[str] = None,
         avoid_repeating: Optional[List[str]] = None,
+        previous_industry: Optional[str] = None,
     ) -> dict:
         """Run the full engine pipeline for one request.
 
@@ -88,9 +90,17 @@ class ContentGenerationEngine:
           repeat or lightly reword any of these. Optional — a one-off
           generation doesn't need it.
 
+        previous_industry: the industry (from _INDUSTRIES in
+          prompt_builder.py) used for this same caller's immediately
+          preceding piece of content, if the caller tracks it. Used only
+          as a fallback suggestion for content that names no specific
+          industry itself, so consecutive generic-content images don't
+          converge on the same industry. Optional — a one-off generation
+          doesn't need it.
+
         Returns a dict with keys: content_text, image_prompt,
         negative_prompt, alt_text, tags, summary, context_chunks,
-        daily_tip_focus.
+        daily_tip_focus, suggested_industry.
         """
         topic = (prompt or "").strip()
         if not topic:
@@ -125,6 +135,7 @@ class ContentGenerationEngine:
         img_sys_prompt = load_image_prompt_system_prompt()
 
         daily_tip_focus = pick_daily_tip_focus() if content_type == "Daily Tip" else None
+        suggested_industry = pick_industry(avoid=previous_industry)
 
         try:
             if content_type == "Daily Tip":
@@ -164,6 +175,7 @@ class ContentGenerationEngine:
                 generated_content=content_text,
                 context_chunks=context_chunks,
                 mode=mode,
+                suggested_industry=suggested_industry,
             )
         except Exception as exc:
             logger.error("Image prompt generation failed: %s", exc)
@@ -184,6 +196,7 @@ class ContentGenerationEngine:
             "summary": image_package.get("summary", ""),
             "context_chunks": context_chunks,
             "daily_tip_focus": daily_tip_focus,
+            "suggested_industry": suggested_industry,
         }
 
     def _generate_daily_tip(

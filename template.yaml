@@ -107,8 +107,8 @@ Resources:
               Resource: !Sub "arn:aws:s3:::${UploadBucketName}/${UploadPrefix}*"
             - Effect: Allow
               Action:
-                - bedrock-agent:StartIngestionJob
-                - bedrock-agent:GetIngestionJob
+                - bedrock:StartIngestionJob
+                - bedrock:GetIngestionJob
               # Same Knowledge Base ARN as the bedrock:Retrieve statement above -
               # this only grants ingestion control, and start_ingestion_job() is
               # always called with UploadDataSourceId, so the existing data

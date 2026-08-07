@@ -8,7 +8,13 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.config import settings
-from app.schemas.content import CONTENT_TYPES, GenerateContentRequest, GenerateContentResponse
+from app.schemas.content import (
+    CONTENT_TYPES,
+    GenerateContentRequest,
+    GenerateContentResponse,
+    RegenerateImageRequest,
+    RegenerateImageResponse,
+)
 from app.services.content_generation_engine import ContentGenerationEngine, ContentGenerationError
 from app.services.image_generation_service import generate_variations, generate_variations_events
 from app.services.image_storage_service import upload_images_to_s3
@@ -88,6 +94,40 @@ def generate(request: GenerateContentRequest) -> GenerateContentResponse:
     return build_response(result, image_urls)
 
 
+@router.post("/regenerate-image", response_model=RegenerateImageResponse)
+def regenerate_image(request: RegenerateImageRequest) -> RegenerateImageResponse:
+    """Regenerate ONE new image from an already-produced image_prompt/
+    negative_prompt — backs the frontend's per-image recycle button.
+
+    Deliberately skips content generation and image-prompt generation
+    entirely (the caller already has both from a prior /generate or
+    /generate/stream response) and just renders one fresh variation of
+    the same prompt, since the image models are stochastic and a second
+    call on the same prompt produces a different image.
+    """
+    try:
+        images = generate_variations(
+            prompt=request.image_prompt,
+            negative_prompt=request.negative_prompt or "",
+            count=1,
+        )
+    except Exception as exc:
+        logger.error("Image regeneration failed: %s", exc)
+        raise HTTPException(status_code=502, detail=f"Image regeneration failed: {exc}")
+
+    try:
+        import uuid as _uuid
+
+        from app.services.image_storage_service import upload_single_image_to_s3
+
+        url = upload_single_image_to_s3(images[0], _uuid.uuid4().hex, 0)
+    except Exception as exc:
+        logger.error("Regenerated image upload to S3 failed: %s", exc)
+        raise HTTPException(status_code=502, detail=f"Image upload failed: {exc}")
+
+    return RegenerateImageResponse(url=url)
+
+
 def _sse(event: str, data: dict) -> str:
     """Format one Server-Sent Event. Each event is `event: <name>` plus
     a single `data: <json>` line, terminated by a blank line — SSE's
@@ -107,7 +147,7 @@ def generate_stream(request: GenerateContentRequest):
 
         stage            {"stage": "retrieving_context"}
         stage            {"stage": "generating_content"}
-        content_ready    {content_text, summary, tags, alt_text, image_prompt}
+        content_ready    {content_text, summary, tags, alt_text, image_prompt, negative_prompt}
         image_progress   {"index": i, "status": "submitted"|"polling"|"downloading", "detail": {...}}
         image_ready      {"index": i, "url": "..."}
         image_failed     {"index": i, "error": "..."}
@@ -157,6 +197,7 @@ def generate_stream(request: GenerateContentRequest):
                 "tags": result.get("tags", []),
                 "alt_text": result.get("alt_text", ""),
                 "image_prompt": result["image_prompt"],
+                "negative_prompt": result.get("negative_prompt", ""),
             })
 
             # Whatever time is left of the total budget goes to image

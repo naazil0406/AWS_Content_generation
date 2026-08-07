@@ -48,6 +48,35 @@ _DAILY_TIP_FOCUS_ROTATION: List[Tuple[str, str]] = [("State", s) for s in _STATE
     ("Error", e) for e in _ERRORS
 ]
 
+# Must stay in sync with the "Setting selection" bullet under SHARED RULES
+# in prompts/image_prompt_system.txt — same fifteen industries, same
+# wording/order. The Image Prompt Generation Agent is told to match the
+# industry to whatever the Generated Content actually names; this
+# rotation only supplies a *suggested* industry for when the content is
+# generic and names no specific industry itself, so that generic content
+# doesn't keep converging on the same default (e.g. Food & Beverage/
+# commercial-kitchen) across requests. Chosen at random per request,
+# excluding whichever industry was used last time if the caller supplies
+# it — the same "give the model a concrete pick instead of leaving it to
+# chance" approach already used for _DAILY_TIP_FOCUS_ROTATION above.
+_INDUSTRIES: List[str] = [
+    "Warehouse & Logistics",
+    "Manufacturing",
+    "Construction",
+    "Oil & Gas",
+    "Mining",
+    "Utilities & Electrical",
+    "Agriculture",
+    "Healthcare",
+    "Transportation & Fleet",
+    "Food & Beverage Manufacturing",
+    "Chemical & Petrochemical",
+    "Aviation",
+    "Maritime & Ports",
+    "Waste Management",
+    "Corporate Office",
+]
+
 # Negative-prompt fallbacks, used only when the Image Prompt Generation
 # Agent's JSON response comes back with an empty negative_prompt field.
 # One fallback per Output Mode (infographic/concept/scene) — a "scene"
@@ -122,6 +151,16 @@ def pick_daily_tip_focus() -> Tuple[str, str]:
     ("Error", "Eyes not on task") — from the 8-item States/Errors
     rotation. Called once per Daily Tip generation."""
     return random.choice(_DAILY_TIP_FOCUS_ROTATION)
+
+
+def pick_industry(avoid: Optional[str] = None) -> str:
+    """Pick one random industry from the 15-item rotation, excluding
+    `avoid` (typically the industry used for this same caller's previous
+    piece of content) so consecutive generations don't converge on the
+    same one. If `avoid` isn't in the list or leaves no other choices,
+    falls back to picking from the full list."""
+    choices = [i for i in _INDUSTRIES if i != avoid] or _INDUSTRIES
+    return random.choice(choices)
 
 
 def negative_prompt_for_mode(mode: str) -> str:
@@ -270,14 +309,31 @@ def build_image_prompt_request(
     generated_content: str,
     context_chunks: List[dict],
     mode: str,
+    suggested_industry: Optional[str] = None,
 ) -> str:
-    """Build the user-turn prompt for the Image Prompt Generation Agent."""
+    """Build the user-turn prompt for the Image Prompt Generation Agent.
+
+    suggested_industry: one of the 15 industries from _INDUSTRIES,
+      picked by pick_industry(). Passed through only as a fallback the
+      system prompt tells the model to use when the Generated Content
+      itself names no specific industry — it must NOT override an
+      industry the content already implies.
+    """
     if mode not in _VALID_MODES:
         mode = "infographic"
-    return (
+    user_prompt = (
         f"Output Mode: {mode}\n\n"
         f"Content Type: {content_type}\n"
         f"Topic: {topic}\n\n"
         f"Generated Content:\n{generated_content}\n\n"
         f"Retrieved Context:\n{format_context(context_chunks)}"
     )
+    if suggested_industry:
+        user_prompt += (
+            f"\n\nSuggested Industry: {suggested_industry}\n"
+            f"(Use this industry for the setting ONLY if the Generated "
+            f"Content above names no specific industry or hazard type of "
+            f"its own. If the content already implies a specific industry, "
+            f"use that instead and ignore this suggestion.)"
+        )
+    return user_prompt

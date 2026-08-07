@@ -165,9 +165,15 @@ placeholder:
   grinder," "extension ladder").
 - Instead of "protective gear," name the exact piece ("steel-toe boots,"
   "safety harness with D-ring," "cut-resistant gloves").
-- Instead of "workplace" or "environment," name the exact setting
-  ("warehouse pallet-racking aisle," "commercial kitchen line,"
-  "rooftop HVAC platform").
+- Instead of "workplace" or "environment," name the exact setting within
+  whichever of the fifteen industries (see Setting Selection rule in
+  SHARED RULES below) best matches the content's actual hazard/tool/
+  equipment — e.g. "warehouse pallet-racking aisle" for Warehouse &
+  Logistics, "electrical switchgear room" for Utilities & Electrical,
+  "construction scaffold" for Construction, "manufacturing shop floor"
+  for Manufacturing, "chemical plant walkway" for Chemical &
+  Petrochemical. Never default to a Food & Beverage Manufacturing/
+  commercial-kitchen setting for content that doesn't name an industry.
 - If the Generated Content itself is genuinely generic (no specific item
   named), pick the single most common, plausible real-world instance for
   that Content Type's domain rather than describing an abstract category.
@@ -289,14 +295,28 @@ The image_prompt must explicitly cover each of the following, always
 naming the specific real-world item rather than a generic category
 (e.g. "forklift," not "vehicle"; "steel-toe boots," not "footwear";
 "warehouse pallet-racking aisle," not "workplace"):
-- Environment: the specific real-world workplace setting (e.g. warehouse
-  aisle, construction scaffold, commercial kitchen line, chemical plant
-  walkway) — never a vague placeholder like "a workplace" or "an
-  industrial setting."
-- People: how many, what they're doing, their posture/body
-  language/facial expression conveying the underlying emotional state
-  (hurried, distracted, tired, frustrated, focused, confident) WITHOUT
-  naming that state.
+- Environment: the specific real-world workplace setting within whichever
+  of the fifteen industries (see Setting Selection rule in SHARED RULES
+  below) best matches the hazard/tool/equipment actually named in the
+  Generated Content — e.g. warehouse pallet-racking aisle for Warehouse &
+  Logistics, electrical switchgear room for Utilities & Electrical,
+  construction scaffold for Construction, manufacturing shop floor for
+  Manufacturing, chemical plant walkway for Chemical & Petrochemical —
+  never a vague placeholder like "a workplace" or "an industrial
+  setting," and never a Food & Beverage Manufacturing/commercial-kitchen
+  setting unless the content is itself specifically about food/beverage
+  production or kitchen hazards.
+- People: how many, and — critically — what specific physical task they
+  are actively performing in this instant (operating, lifting, cutting,
+  climbing, inspecting, reaching, bracing, etc., matching the exact
+  action described in the Generated Content). A person merely standing
+  near an object, posed facing the camera, or present in the frame
+  without a concrete task is not acceptable — every person in the scene
+  must be caught mid-action on the specific activity the content
+  describes, not idling next to the hazard/equipment. Describe their
+  posture/body language/facial expression conveying the underlying
+  emotional state (hurried, distracted, tired, frustrated, focused,
+  confident) WITHOUT naming that state.
 - Objects: the specific named tools, equipment, materials, or hazards
   actually involved — never a generic category word standing in for a
   real item.
@@ -457,6 +477,26 @@ SHARED RULES (all modes)
 - Avoid short prompts, generic prompts, and repeated words. Describe the
   scene naturally as flowing prose, grounded in the Generated Content —
   not a keyword list.
+- Setting selection: the workplace setting must come from exactly this
+  set of industries — Warehouse & Logistics, Manufacturing, Construction,
+  Oil & Gas, Mining, Utilities & Electrical, Agriculture, Healthcare,
+  Transportation & Fleet, Food & Beverage Manufacturing, Chemical &
+  Petrochemical, Aviation, Maritime & Ports, Waste Management, Corporate
+  Office. Choose the one industry from this list that best matches the
+  specific hazard, tool, or equipment actually named in the Generated
+  Content (e.g. lockout/tagout or hazardous-energy content -> Utilities &
+  Electrical or Manufacturing; material-handling content -> Warehouse &
+  Logistics; fall-protection content -> Construction; patient-handling
+  content -> Healthcare). If the Generated Content names no specific
+  industry or hazard type, pick whichever of these fifteen industries is
+  not the one used in the immediately preceding piece of content, so
+  consecutive images do not converge on the same industry — treat each
+  generation as needing a unique, deliberately varied industry pick
+  rather than a default. Never substitute an industry outside this list,
+  and never let Food & Beverage Manufacturing (or any food-service/
+  commercial-kitchen setting) become the default for generic or
+  industry-unspecified content — use it only when the content is itself
+  about food/beverage production or kitchen hazards.
 - Specificity: every person, object, tool, hazard, or setting named must
   be the single concrete, specific real-world instance the Generated
   Content implies — never a generic category word (e.g. "forklift," not

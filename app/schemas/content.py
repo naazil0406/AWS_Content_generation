@@ -60,5 +60,20 @@ class GenerateContentResponse(BaseModel):
     )
 
 
+class RegenerateImageRequest(BaseModel):
+    """Regenerate ONE image from an already-produced image prompt — used
+    by the frontend's per-image recycle/regenerate button. Does not
+    re-run content or image-prompt generation; the caller already has
+    image_prompt/negative_prompt from a prior /generate or
+    /generate/stream response and just wants a fresh render of it."""
+
+    image_prompt: str = Field(..., min_length=1)
+    negative_prompt: Optional[str] = None
+
+
+class RegenerateImageResponse(BaseModel):
+    url: str = Field(..., description="Presigned S3 URL for the newly regenerated image.")
+
+
 class ErrorResponse(BaseModel):
     detail: str
