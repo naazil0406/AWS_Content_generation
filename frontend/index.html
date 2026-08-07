@@ -43,18 +43,7 @@ button { font-family: inherit; cursor: pointer; }
   padding: 40px 24px 80px;
 }
 
-.layout {
-  display: flex;
-  align-items: flex-start;
-  gap: 28px;
-}
-.main-col { flex: 1 1 auto; min-width: 0; }
-.side-col { flex: 0 0 320px; width: 320px; }
-
-@media (max-width: 820px) {
-  .layout { flex-direction: column; }
-  .side-col { width: 100%; flex-basis: auto; order: -1; }
-}
+.main-col { max-width: 760px; }
 
 .header { margin-bottom: 28px; }
 
@@ -114,6 +103,11 @@ h1 {
 }
 .btn:hover { background: var(--gold-deep); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.btn-secondary {
+  background: #fff; color: var(--ink-soft); border: 1px solid var(--paper-rule);
+}
+.btn-secondary:hover { background: var(--paper); }
 
 .spinner {
   width: 14px; height: 14px; border: 2px solid rgba(27,20,6,0.35);
@@ -183,41 +177,16 @@ h1 {
 .section-hint { margin-top: 16px; cursor: pointer; text-decoration: underline; font-size: 13px; color: var(--ink-text-soft); }
 .prompt-text { font-size: 13px; color: var(--ink-text-soft); border-top: 1px solid var(--paper-rule); padding-top: 12px; margin-top: 12px; }
 
-/* --- Campaign Documents upload card --- */
-.btn-secondary {
-  background: #fff; color: var(--ink-soft); border: 1px solid var(--paper-rule);
+/* --- Regenerate --- */
+.regenerate-row {
+  display: flex; align-items: center; gap: 14px;
+  margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--paper-rule);
 }
-.btn-secondary:hover { background: var(--paper); }
-
-.upload-dropzone {
-  border: 2px dashed var(--paper-rule); border-radius: var(--radius);
-  padding: 28px 16px; text-align: center; transition: border-color 0.15s ease, background 0.15s ease;
-}
-.upload-dropzone.dragover { border-color: var(--gold); background: #fbf6e8; }
-.upload-dropzone-text { margin: 0 0 12px; font-size: 13.5px; color: var(--ink-text-soft); }
-.upload-formats {
-  margin: 12px 0 0; font-family: var(--font-mono); font-size: 11px;
-  color: var(--ink-text-soft); letter-spacing: 0.04em; text-transform: uppercase;
-}
-
-.upload-file-list { list-style: none; padding: 0; margin: 14px 0 0; font-size: 13px; }
-.upload-file-list li {
-  display: flex; align-items: center; justify-content: space-between; gap: 10px;
-  padding: 7px 12px; border: 1px solid var(--paper-rule); border-radius: 6px;
-  margin-bottom: 6px; background: #fff;
-}
-.upload-file-list .file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.upload-file-list .remove-file {
-  background: none; border: none; color: var(--danger); font-size: 15px; line-height: 1;
-  padding: 0 4px; flex-shrink: 0;
-}
-
-.upload-card .btn { margin-top: 16px; }
+.regenerate-row .status { margin-top: 0; }
 </style>
 </head>
 <body>
 <div class="wrap">
-<div class="layout">
 
   <div class="main-col">
 
@@ -259,32 +228,16 @@ h1 {
 
       <div class="images" id="images"></div>
 
+      <div class="regenerate-row">
+        <button class="btn btn-secondary" id="regenerateBtn">&#8635; Regenerate</button>
+      </div>
+
       <div class="section-hint" id="imagePromptToggle">Show image prompt ▾</div>
       <p class="prompt-text" id="imagePromptText" hidden></p>
     </div>
 
   </div>
 
-  <div class="side-col">
-    <div class="card upload-card">
-      <p class="section-title">Campaign Documents</p>
-      <p class="sub" style="margin-bottom:16px;">Upload campaign documents to improve AI-generated content using Amazon Bedrock Knowledge Base.</p>
-
-      <div class="upload-dropzone" id="uploadDropzone">
-        <p class="upload-dropzone-text">Drag files here, or</p>
-        <button class="btn btn-secondary" id="chooseFilesBtn" type="button">Choose Files</button>
-        <input type="file" id="fileInput" multiple accept=".pdf,.docx,.txt,.md" hidden />
-        <p class="upload-formats">PDF &middot; DOCX &middot; TXT &middot; MD</p>
-      </div>
-
-      <ul class="upload-file-list" id="uploadFileList"></ul>
-
-      <button class="btn" id="uploadBtn" disabled>Upload Documents</button>
-      <div class="status" id="uploadStatus"></div>
-    </div>
-  </div>
-
-</div>
 </div>
 
 <script>
@@ -502,29 +455,31 @@ async function generateContentStreaming(contentType, topic, statusEl, timerValue
   }
 }
 
-async function generateContent() {
-  const contentType = document.getElementById("contentType").value;
-  const topic = document.getElementById("topic").value.trim();
-  const btn = document.getElementById("generateBtn");
+// Tracks the params from the most recent successful generation so
+// Regenerate can re-run the exact same request without the user
+// needing to reopen the panel and retype anything.
+let lastContentType = null;
+let lastTopic = null;
+
+// Shared by the initial "Generate" button and the "Regenerate" button —
+// runs the streaming generation with the same early-failure retry
+// behavior either way. Both generate/regenerate buttons are disabled
+// while any run is in flight so a second click can't overlap the first.
+async function runGeneration(contentType, topic) {
   const statusEl = document.getElementById("generateStatus");
+  const generateBtn = document.getElementById("generateBtn");
+  const regenerateBtn = document.getElementById("regenerateBtn");
 
-  if (!contentType) return setStatus(statusEl, "Choose a content type first.", true);
-  if (!topic) return setStatus(statusEl, "Enter a topic first.", true);
+  generateBtn.disabled = true;
+  regenerateBtn.disabled = true;
 
-  document.getElementById("resultCard").hidden = true;
-  btn.disabled = true;
-
-  // Knowledge base retrieval can occasionally fail early (e.g. Aurora
-  // Serverless waking from an idle pause, ~15-30s) before any content
-  // has streamed back — that's the only case worth auto-retrying,
-  // since retrying after images have already started wastes the
-  // work that succeeded. generateContentStreaming() throws with
-  // `.earlyFailure = true` for exactly that case.
   const MAX_RETRIES = 2;
   let attempt = 0;
   while (true) {
     try {
       await generateContentStreaming(contentType, topic, statusEl, document.getElementById("timerValue"));
+      lastContentType = contentType;
+      lastTopic = topic;
       break;
     } catch (err) {
       attempt += 1;
@@ -538,109 +493,38 @@ async function generateContent() {
       break;
     }
   }
-  btn.disabled = false;
+  generateBtn.disabled = false;
+  regenerateBtn.disabled = false;
 }
 
-// --- Campaign Document Upload ---
-let selectedFiles = [];
-const UPLOAD_ALLOWED_EXTS = ["pdf", "docx", "txt", "md"];
+async function generateContent() {
+  const contentType = document.getElementById("contentType").value;
+  const topic = document.getElementById("topic").value.trim();
+  const statusEl = document.getElementById("generateStatus");
 
-function uploadFileExtOk(name) {
-  const ext = (name.split(".").pop() || "").toLowerCase();
-  return UPLOAD_ALLOWED_EXTS.includes(ext);
+  if (!contentType) return setStatus(statusEl, "Choose a content type first.", true);
+  if (!topic) return setStatus(statusEl, "Enter a topic first.", true);
+
+  document.getElementById("resultCard").hidden = true;
+  await runGeneration(contentType, topic);
 }
 
-function renderUploadFileList() {
-  const list = document.getElementById("uploadFileList");
-  list.innerHTML = selectedFiles.map((f, i) => `
-    <li>
-      <span class="file-name">${escapeHtml(f.name)}</span>
-      <button class="remove-file" data-index="${i}" aria-label="Remove ${escapeHtml(f.name)}">&times;</button>
-    </li>
-  `).join("");
-  document.getElementById("uploadBtn").disabled = selectedFiles.length === 0;
-  list.querySelectorAll(".remove-file").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      selectedFiles.splice(Number(btn.dataset.index), 1);
-      renderUploadFileList();
-    });
-  });
+// Re-runs the last generation from scratch with the same Content Type
+// and Topic, producing new content text and a new set of 3 images —
+// each generation is unique by design (see the content/image prompts),
+// so this naturally yields a fresh variation rather than repeating.
+async function regenerateContent() {
+  if (!lastContentType || !lastTopic) return;
+  document.getElementById("contentType").value = lastContentType;
+  document.getElementById("topic").value = lastTopic;
+  openGenPanel();
+  await runGeneration(lastContentType, lastTopic);
 }
-
-function addUploadFiles(fileListLike) {
-  const statusEl = document.getElementById("uploadStatus");
-  const rejected = [];
-  for (const f of Array.from(fileListLike)) {
-    if (!uploadFileExtOk(f.name)) { rejected.push(f.name); continue; }
-    selectedFiles.push(f);
-  }
-  renderUploadFileList();
-  if (rejected.length) {
-    setStatus(statusEl, `Unsupported file type(s) skipped: ${rejected.join(", ")}. Allowed: PDF, DOCX, TXT, MD.`, true);
-  }
-}
-
-const uploadDropzone = document.getElementById("uploadDropzone");
-const uploadFileInput = document.getElementById("fileInput");
-document.getElementById("chooseFilesBtn").addEventListener("click", () => uploadFileInput.click());
-uploadFileInput.addEventListener("change", (e) => {
-  addUploadFiles(e.target.files);
-  uploadFileInput.value = ""; // allow re-selecting the same file after removal
-});
-["dragenter", "dragover"].forEach((evt) => uploadDropzone.addEventListener(evt, (e) => {
-  e.preventDefault();
-  uploadDropzone.classList.add("dragover");
-}));
-["dragleave", "drop"].forEach((evt) => uploadDropzone.addEventListener(evt, (e) => {
-  e.preventDefault();
-  uploadDropzone.classList.remove("dragover");
-}));
-uploadDropzone.addEventListener("drop", (e) => {
-  if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
-    addUploadFiles(e.dataTransfer.files);
-  }
-});
-
-async function uploadCampaignDocuments() {
-  const statusEl = document.getElementById("uploadStatus");
-  const btn = document.getElementById("uploadBtn");
-  if (selectedFiles.length === 0) {
-    return setStatus(statusEl, "Select at least one file first.", true);
-  }
-
-  btn.disabled = true;
-  setStatus(statusEl, "Uploading…");
-
-  const formData = new FormData();
-  selectedFiles.forEach((f) => formData.append("files", f, f.name));
-
-  try {
-    const res = await fetch(API + "/api/upload", { method: "POST", body: formData });
-    const body = await res.json().catch(() => null);
-    if (!res.ok) throw new Error((body && body.detail) || res.statusText);
-
-    if (body.ingestion_started) {
-      setStatus(
-        statusEl,
-        "✓ Documents uploaded successfully. Knowledge Base ingestion has started. " +
-        "Your documents will be available for content generation once ingestion completes."
-      );
-    } else {
-      setStatus(statusEl, `Documents uploaded, but ingestion did not start: ${body.message}`, true);
-    }
-    selectedFiles = [];
-    renderUploadFileList();
-  } catch (err) {
-    setStatus(statusEl, `Error: ${err.message}`, true);
-    btn.disabled = selectedFiles.length === 0;
-  }
-}
-
-document.getElementById("uploadBtn").addEventListener("click", uploadCampaignDocuments);
 
 document.getElementById("openGenBtn").addEventListener("click", openGenPanel);
 document.getElementById("closeGenBtn").addEventListener("click", closeGenPanel);
 document.getElementById("generateBtn").addEventListener("click", generateContent);
+document.getElementById("regenerateBtn").addEventListener("click", regenerateContent);
 document.getElementById("imagePromptToggle").addEventListener("click", () => {
   const el = document.getElementById("imagePromptText");
   const toggle = document.getElementById("imagePromptToggle");
