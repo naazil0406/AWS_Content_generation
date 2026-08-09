@@ -96,6 +96,15 @@ class FreepikImageService:
         # Selected purely via FREEPIK_MODEL=seedream-v4-5 (env var) — no
         # other code path changes, same as every other Freepik model here.
         "seedream-v4-5": "https://api.freepik.com/v1/ai/text-to-image/seedream-v4-5",
+        # Seedream V5 Lite — ByteDance's newest model on Freepik as of
+        # this writing. Selected via FREEPIK_MODEL=seedream-v5-lite.
+        # NOTE: the exact string must be "seedream-v5-lite" (not
+        # "seedream-v5" or "seedream-v.5") to match this dict key and
+        # Freepik's actual endpoint path — any other spelling falls
+        # through to the `.get(model, self._MYSTIC_URL)` default below
+        # and silently submits to Mystic instead, which is the slow
+        # ~90-130s model this change is meant to avoid.
+        "seedream-v5-lite": "https://api.freepik.com/v1/ai/text-to-image/seedream-v5-lite",
     }
     _MYSTIC_URL = "https://api.freepik.com/v1/ai/mystic"
 

@@ -59,7 +59,17 @@ class Settings:
 
     # --- Image Prompt Generation Agent (turns content into an image prompt) ---
     IMAGE_PROMPT_MODEL: str = os.getenv("IMAGE_PROMPT_MODEL", "amazon.nova-lite-v1:0")
-    IMAGE_PROMPT_MAX_TOKENS: int = int(os.getenv("IMAGE_PROMPT_MAX_TOKENS", "512"))
+    # Must fit: 3 image_prompts (target 120-180 words each per
+    # prompts/image_prompt_system.txt's Elaboration rule) + negative_prompt
+    # + alt_text + tags + summary, all as one JSON object. 512 was sized
+    # for shorter single-sentence-ish prompts; it's too tight for the
+    # elaborated/content-specific version and causes the model to
+    # compress under pressure — typically by dropping the content-specific
+    # facts/items in favor of shorter generic filler, which is what makes
+    # generated images drift from the actual Generated Content. ~1800
+    # gives headroom for 3 x ~180 words (~250 tokens each) plus metadata,
+    # with margin.
+    IMAGE_PROMPT_MAX_TOKENS: int = int(os.getenv("IMAGE_PROMPT_MAX_TOKENS", "1800"))
     IMAGE_PROMPT_TEMPERATURE: float = float(os.getenv("IMAGE_PROMPT_TEMPERATURE", "0.3"))
 
     # --- Image Generation Service ---
@@ -86,6 +96,11 @@ class Settings:
     POLLINATIONS_BASE_URL: str = os.getenv("POLLINATIONS_BASE_URL", "https://image.pollinations.ai/prompt")
 
     FREEPIK_API_KEY: str = os.getenv("FREEPIK_API_KEY", "").strip()
+    # Blank -> falls through to Mystic (slowest, ~90-130s/image at 2K).
+    # Faster options: "hyperflux" (fastest), "flux-dev", "seedream-v4",
+    # "seedream-v4-5", or "seedream-v5-lite" (newest, ~20-40s/image per
+    # third-party benchmarks). Must match a key in _FLUX_ENDPOINTS above
+    # exactly, or it silently falls back to Mystic.
     FREEPIK_MODEL: str = os.getenv("FREEPIK_MODEL", "")
     FREEPIK_RESOLUTION: str = os.getenv("FREEPIK_RESOLUTION", "2k")
     FREEPIK_FILTER_NSFW: bool = os.getenv("FREEPIK_FILTER_NSFW", "true").strip().lower() == "true"
