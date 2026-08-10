@@ -17,22 +17,19 @@ _PROMPTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.p
 
 _CONTENT_GENERATION_SYSTEM_PROMPT_PATH = os.path.join(_PROMPTS_DIR, "content_generation_system.txt")
 _IMAGE_PROMPT_SYSTEM_PROMPT_PATH = os.path.join(_PROMPTS_DIR, "image_prompt_system.txt")
+_IMAGE_PROMPT_VALIDATOR_SYSTEM_PROMPT_PATH = os.path.join(_PROMPTS_DIR, "image_prompt_validator_system.txt")
 
 # Content Type -> Output Mode. Must stay in sync with the "CONTENT TYPE
 # -> OUTPUT MODE MAPPING" table in prompts/image_prompt_system.txt —
-# same eleven Content Types, same three modes (infographic/concept/scene).
+# same seven Content Types, same three modes (infographic/concept/scene).
 _CONTENT_TYPE_TO_MODE = {
     "Recall Card": "concept",
-    "AI Image": "scene",
     "Infographic": "infographic",
-    "Flashcard": "concept",
     "Scenario": "scene",
-    "Spot the Mistake Challenge": "scene",
-    "Daily Quiz": "concept",
+    "Spot the Mistake": "scene",
+    "Question": "scene",
+    "Safety Tip": "scene",
     "Fun Fact": "concept",
-    "Reflection Question": "scene",
-    "Safety / Best Practice Tip": "scene",
-    "Daily Tip": "scene",
 }
 _VALID_MODES = ("infographic", "concept", "scene")
 
@@ -48,34 +45,21 @@ _DAILY_TIP_FOCUS_ROTATION: List[Tuple[str, str]] = [("State", s) for s in _STATE
     ("Error", e) for e in _ERRORS
 ]
 
-# Must stay in sync with the "Setting selection" bullet under SHARED RULES
-# in prompts/image_prompt_system.txt — same fifteen industries, same
-# wording/order. The Image Prompt Generation Agent is told to match the
-# industry to whatever the Generated Content actually names; this
-# rotation only supplies a *suggested* industry for when the content is
-# generic and names no specific industry itself, so that generic content
-# doesn't keep converging on the same default (e.g. Food & Beverage/
-# commercial-kitchen) across requests. Chosen at random per request,
-# excluding whichever industry was used last time if the caller supplies
-# it — the same "give the model a concrete pick instead of leaving it to
-# chance" approach already used for _DAILY_TIP_FOCUS_ROTATION above.
-_INDUSTRIES: List[str] = [
-    "Warehouse & Logistics",
-    "Manufacturing",
-    "Construction",
-    "Oil & Gas",
-    "Mining",
-    "Utilities & Electrical",
-    "Agriculture",
-    "Healthcare",
-    "Transportation & Fleet",
-    "Food & Beverage Manufacturing",
-    "Chemical & Petrochemical",
-    "Aviation",
-    "Maritime & Ports",
-    "Waste Management",
-    "Corporate Office",
-]
+# The available industries are NOT hardcoded here. They live in exactly
+# one place — the "AVAILABLE INDUSTRIES" section (between the
+# "--- INDUSTRY LIST START ---" / "--- INDUSTRY LIST END ---" markers)
+# near the top of prompts/image_prompt_system.txt — so there is a single
+# source of truth both the Image Prompt Agent (which reads that section
+# as part of its system prompt) and this application (which parses the
+# same section below) agree on. To add/remove/rename an industry, edit
+# ONLY that section of the .txt file; nothing here needs to change.
+_INDUSTRY_LIST_START_MARKER = "--- INDUSTRY LIST START ---"
+_INDUSTRY_LIST_END_MARKER = "--- INDUSTRY LIST END ---"
+# Defensive fallback ONLY — used if the markers above are ever missing or
+# reordered in the .txt file (e.g. mid-edit) so a random request doesn't
+# hard-crash. This is not a second source of truth to keep in sync; if
+# you see this list being used, the .txt file's markers need fixing.
+_FALLBACK_INDUSTRIES: List[str] = ["Manufacturing", "Warehouse & Logistics", "Corporate Office"]
 
 # Negative-prompt fallbacks, used only when the Image Prompt Generation
 # Agent's JSON response comes back with an empty negative_prompt field.
@@ -127,6 +111,44 @@ def load_image_prompt_system_prompt() -> str:
         return f.read()
 
 
+@lru_cache(maxsize=1)
+def load_image_prompt_validator_system_prompt() -> str:
+    """The second-pass QA agent (see content_generation_engine.py) that
+    checks each of the Image Prompt Generation Agent's three draft
+    prompts against the Generated Content — content grounding, semantic
+    match, industry consistency, specificity, the Generic Image Test, the
+    Content Type Test, and distinctness — and rewrites any that fail
+    BEFORE they ever reach Freepik. See
+    prompts/image_prompt_validator_system.txt for the full rules.
+    """
+    with open(_IMAGE_PROMPT_VALIDATOR_SYSTEM_PROMPT_PATH, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+@lru_cache(maxsize=1)
+def load_available_industries() -> Tuple[str, ...]:
+    """Parse the industry list straight out of image_prompt_system.txt's
+    "AVAILABLE INDUSTRIES" section (between the START/END markers) — the
+    single source of truth both this application and the Image Prompt
+    Agent read. Returns a tuple (cached — the .txt file doesn't change at
+    runtime) of non-empty, stripped industry names in file order.
+
+    Falls back to a tiny defensive list (_FALLBACK_INDUSTRIES) only if
+    the markers can't be found, so a malformed prompt file degrades
+    randomization rather than crashing every request — this fallback is
+    not meant to be a maintained list; fix the .txt file's markers
+    instead of relying on it.
+    """
+    text = load_image_prompt_system_prompt()
+    start = text.find(_INDUSTRY_LIST_START_MARKER)
+    end = text.find(_INDUSTRY_LIST_END_MARKER)
+    if start == -1 or end == -1 or end <= start:
+        return tuple(_FALLBACK_INDUSTRIES)
+    block = text[start + len(_INDUSTRY_LIST_START_MARKER):end]
+    industries = [line.strip() for line in block.splitlines() if line.strip()]
+    return tuple(industries) or tuple(_FALLBACK_INDUSTRIES)
+
+
 def format_context(chunks: List[dict]) -> str:
     """Format Knowledge Base chunks for inclusion in a prompt."""
     if not chunks:
@@ -155,12 +177,22 @@ def pick_daily_tip_focus() -> Tuple[str, str]:
 
 
 def pick_industry(avoid: Optional[str] = None) -> str:
-    """Pick one random industry from the 15-item rotation, excluding
+    """Randomly select exactly ONE industry from the single-source-of-
+    truth list (load_available_industries(), parsed from
+    image_prompt_system.txt's AVAILABLE INDUSTRIES section), excluding
     `avoid` (typically the industry used for this same caller's previous
     piece of content) so consecutive generations don't converge on the
     same one. If `avoid` isn't in the list or leaves no other choices,
-    falls back to picking from the full list."""
-    choices = [i for i in _INDUSTRIES if i != avoid] or _INDUSTRIES
+    falls back to picking from the full list.
+
+    Called once per request by ContentGenerationEngine.generate() when
+    the caller supplies no explicit `industry` of its own. Whatever this
+    returns becomes THE industry for that entire request — passed
+    identically to both the Content Generation Agent and the Image
+    Prompt Agent, never re-picked independently by either.
+    """
+    industries = load_available_industries()
+    choices = [i for i in industries if i != avoid] or list(industries)
     return random.choice(choices)
 
 
@@ -255,6 +287,7 @@ def build_content_generation_prompt(
     content_type: str,
     topic: str,
     context_chunks: List[dict],
+    industry: Optional[str] = None,
     monthly_topic_content: Optional[str] = None,
     common_data: Optional[str] = None,
     web_results: Optional[str] = None,
@@ -263,6 +296,18 @@ def build_content_generation_prompt(
 ) -> str:
     """Build the user-turn prompt for the Content Generation Agent.
 
+    industry: the professional/workplace context resolved for this
+      request — either explicitly given by the caller, or, if not,
+      randomly selected once by ContentGenerationEngine.generate() (see
+      prompt_builder.pick_industry()) before this prompt was built. This
+      is always populated (never invented or swapped mid-request) and is
+      the SAME value also sent to the Image Prompt Agent for this
+      request's three images. The content must actually take place in
+      and reflect this industry's realistic day-to-day work, environment,
+      or hazards — not merely mention the industry's name once and
+      otherwise stay generic. Never invent facts the Retrieved Context
+      doesn't support just to color the industry in more, and never
+      substitute a different industry.
     daily_tip_focus: only meaningful when content_type == "Daily Tip" — a
       ("State", "Rushing") or ("Error", "Eyes not on task") pair (see
       pick_daily_tip_focus()). Required by prompts/content_generation_system.txt's
@@ -277,6 +322,17 @@ def build_content_generation_prompt(
         f"Topic: {topic}\n\n"
         f"Retrieved Context:\n{format_context(context_chunks)}"
     )
+    if industry and industry.strip():
+        user_prompt += (
+            f"\n\nIndustry: {industry.strip()}\n"
+            f"This request's professional/workplace context (explicitly given, or "
+            f"randomly selected for this request if none was given — either way, treat "
+            f"it as fixed for this request). The content must actually take place in "
+            f"and reflect this industry's realistic day-to-day work, environment, or "
+            f"hazards — do not just name-drop the industry once and otherwise stay "
+            f"generic. Never invent facts the Retrieved Context doesn't support, and "
+            f"never substitute a different industry."
+        )
     if daily_tip_focus:
         kind, name = daily_tip_focus
         user_prompt += (
@@ -310,15 +366,20 @@ def build_image_prompt_request(
     generated_content: str,
     context_chunks: List[dict],
     mode: str,
-    suggested_industry: Optional[str] = None,
+    industry: Optional[str] = None,
 ) -> str:
     """Build the user-turn prompt for the Image Prompt Generation Agent.
 
-    suggested_industry: one of the 15 industries from _INDUSTRIES,
-      picked by pick_industry(). Passed through only as a fallback the
-      system prompt tells the model to use when the Generated Content
-      itself names no specific industry — it must NOT override an
-      industry the content already implies.
+    industry: the professional/workplace context resolved ONCE for this
+      request by ContentGenerationEngine.generate() — either explicitly
+      given by the caller, or randomly selected via pick_industry() when
+      not given. Either way, by the time this function is called it is a
+      concrete, resolved value and is authoritative: all three images
+      must use it as the professional context/setting, exactly as given.
+      It must never be invented, randomly re-picked here, or swapped for
+      a different industry just because the content commonly associates
+      with another one. It is also the exact same value sent to the
+      Content Generation Agent for this request — never a different one.
     """
     if mode not in _VALID_MODES:
         mode = "infographic"
@@ -329,12 +390,69 @@ def build_image_prompt_request(
         f"Generated Content:\n{generated_content}\n\n"
         f"Retrieved Context:\n{format_context(context_chunks)}"
     )
-    if suggested_industry:
+    if industry and industry.strip():
         user_prompt += (
-            f"\n\nSuggested Industry: {suggested_industry}\n"
-            f"(Use this industry for the setting ONLY if the Generated "
-            f"Content above names no specific industry or hazard type of "
-            f"its own. If the content already implies a specific industry, "
-            f"use that instead and ignore this suggestion.)"
+            f"\n\nIndustry: {industry.strip()}\n"
+            f"(AUTHORITATIVE for this request — resolved once, before either agent ran, "
+            f"and identical to what the Content Generation Agent received. All three "
+            f"images must be set in this industry's professional context, exactly as "
+            f"given. Do not substitute, mix in, or drift toward a different industry, "
+            f"even if the Generated Content's topic is more commonly associated with "
+            f"one — this Industry value always wins. Do not invent industry-specific "
+            f"facts, objects, or hazards beyond what the Generated Content/Retrieved "
+            f"Context supports; this field sets WHERE the content is shown, not what "
+            f"additional details to add.)"
         )
+    return user_prompt
+
+
+def build_image_prompt_validation_request(
+    content_type: str,
+    mode: str,
+    generated_content: str,
+    draft_entries: List[dict],
+    negative_prompt: str,
+    alt_text: str,
+    tags: List[str],
+    summary: str,
+    industry: Optional[str] = None,
+) -> str:
+    """Build the user-turn prompt for the Image Prompt Validator — the
+    second-pass QA agent that checks the drafting agent's three
+    content_anchor/visual_concept/prompt entries against the Generated
+    Content (see prompts/image_prompt_validator_system.txt for the seven
+    checks) before anything reaches Freepik.
+
+    draft_entries: exactly three dicts, each with keys content_anchor,
+      visual_concept, prompt — the drafting agent's raw output, as parsed
+      by BaseLLMService.generate_image_prompt_package().
+    """
+    if mode not in _VALID_MODES:
+        mode = "infographic"
+
+    def _format_entry(i: int, entry: dict) -> str:
+        return (
+            f"Draft {i}:\n"
+            f"  content_anchor: {entry.get('content_anchor', '')}\n"
+            f"  visual_concept: {entry.get('visual_concept', '')}\n"
+            f"  prompt: {entry.get('prompt', '')}"
+        )
+
+    drafts_block = "\n\n".join(_format_entry(i, entry) for i, entry in enumerate(draft_entries, start=1))
+
+    user_prompt = (
+        f"Output Mode: {mode}\n"
+        f"Content Type: {content_type}\n\n"
+        f"Generated Content:\n{generated_content}\n\n"
+    )
+    if industry and industry.strip():
+        user_prompt += f"Industry: {industry.strip()}\n\n"
+    user_prompt += (
+        f"Shared negative_prompt: {negative_prompt}\n"
+        f"Shared alt_text: {alt_text}\n"
+        f"Shared tags: {', '.join(tags) if tags else ''}\n"
+        f"Shared summary: {summary}\n\n"
+        f"Draft image prompts to validate (exactly three, same order must "
+        f"be preserved in your response):\n\n{drafts_block}"
+    )
     return user_prompt

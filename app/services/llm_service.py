@@ -31,6 +31,55 @@ def _strip_code_fences(text: str) -> str:
     return text.strip()
 
 
+def _parse_prompt_entries(data: dict, keep_validation_fields: bool = False) -> List[dict]:
+    """Parse the `image_prompts` field of a drafting- or validator-agent
+    JSON response into a list of dicts, each with at minimum
+    "content_anchor", "visual_concept", and "prompt" — the traceability
+    structure required by prompts/image_prompt_system.txt's OUTPUT FORMAT
+    (see also image_prompt_validator_system.txt).
+
+    Backward-compatible with two older shapes a less-cooperative model
+    (or a not-yet-updated prompt) might still return:
+      - a plain list of strings (the pre-content_anchor schema) — wrapped
+        with empty content_anchor/visual_concept so callers can rely on
+        the keys always being present.
+      - the even older singular "image_prompt" string field.
+    Entries missing a non-empty "prompt" are dropped rather than crashing
+    the whole request on one bad entry.
+
+    keep_validation_fields: when True (used for the validator agent's
+    response), also carries through "passed"/"reason" if present.
+    """
+    raw_entries = data.get("image_prompts")
+    if not isinstance(raw_entries, list):
+        single = (data.get("image_prompt") or "").strip()
+        raw_entries = [single] if single else []
+
+    parsed: List[dict] = []
+    for item in raw_entries:
+        if isinstance(item, str):
+            prompt_text = item.strip()
+            if not prompt_text:
+                continue
+            entry = {"content_anchor": "", "visual_concept": "", "prompt": prompt_text}
+        elif isinstance(item, dict):
+            prompt_text = (item.get("prompt") or "").strip()
+            if not prompt_text:
+                continue
+            entry = {
+                "content_anchor": (item.get("content_anchor") or "").strip(),
+                "visual_concept": (item.get("visual_concept") or "").strip(),
+                "prompt": prompt_text,
+            }
+            if keep_validation_fields:
+                entry["passed"] = bool(item.get("passed", True))
+                entry["reason"] = (item.get("reason") or "").strip()
+        else:
+            continue
+        parsed.append(entry)
+    return parsed
+
+
 class BaseLLMService:
     """Base class for any LLM transport.
 
@@ -47,6 +96,7 @@ class BaseLLMService:
         content_type: str,
         topic: str,
         context_chunks: List[dict],
+        industry: Optional[str] = None,
         monthly_topic_content: Optional[str] = None,
         common_data: Optional[str] = None,
         web_results: Optional[str] = None,
@@ -57,7 +107,7 @@ class BaseLLMService:
         retrieved Knowledge Base context) into one short, original piece
         of content, per prompts/content_generation_system.txt.
 
-        daily_tip_focus / avoid_repeating: see
+        industry / daily_tip_focus / avoid_repeating: see
         prompt_builder.build_content_generation_prompt() for what each
         does — passed straight through here.
         """
@@ -67,6 +117,7 @@ class BaseLLMService:
             content_type=content_type,
             topic=topic,
             context_chunks=context_chunks,
+            industry=industry,
             monthly_topic_content=monthly_topic_content,
             common_data=common_data,
             web_results=web_results,
@@ -159,22 +210,27 @@ class BaseLLMService:
         generated_content: str,
         context_chunks: List[dict],
         mode: str,
-        suggested_industry: Optional[str] = None,
+        industry: Optional[str] = None,
     ) -> dict:
         """Image Prompt Generation Agent: turn the already-generated
-        content into THREE distinct image prompts (see OUTPUT FORMAT in
-        prompts/image_prompt_system.txt for how they're meant to vary —
-        different item/angle/moment per prompt, not three near-identical
-        restatements) + a shared negative_prompt + alt_text + tags +
-        summary. Returns a dict with:
+        content into THREE distinct, content-anchored image prompts (see
+        OUTPUT FORMAT in prompts/image_prompt_system.txt) + a shared
+        negative_prompt + alt_text + tags + summary. Returns a dict with:
           image_prompts: List[str] — exactly 3 (or however many the model
-            returned; validated non-empty below) — one image is rendered
-            per entry.
+            returned; validated non-empty below) prompt strings, one
+            image rendered per entry — this is what Freepik consumes.
+          prompt_entries: List[dict] — the same 3, each as
+            {"content_anchor", "visual_concept", "prompt"} — the
+            traceability data (which piece of the Generated Content each
+            image represents) fed into the validation pass below.
           negative_prompt, alt_text, tags, summary — same as before,
             shared across all three images.
 
-        suggested_industry: see build_image_prompt_request() — a
-        fallback industry pick for generic content, not an override.
+        industry: the industry resolved ONCE for this request by
+          ContentGenerationEngine.generate() — see
+          build_image_prompt_request(). Always authoritative when
+          present; identical to what generate_content() above received
+          for this same request.
         """
         from app.services.prompt_builder import build_image_prompt_request
 
@@ -184,7 +240,7 @@ class BaseLLMService:
             generated_content=generated_content,
             context_chunks=context_chunks,
             mode=mode,
-            suggested_industry=suggested_industry,
+            industry=industry,
         )
         raw = _strip_code_fences(self._call_llm(system_prompt, user_prompt).strip())
 
@@ -196,25 +252,81 @@ class BaseLLMService:
                 f"Raw response: {raw[:500]}"
             ) from exc
 
-        raw_prompts = data.get("image_prompts")
-        if not isinstance(raw_prompts, list):
-            # Backward-compat fallback: an older/uncooperative model might
-            # still return the singular "image_prompt" string this field
-            # replaced. Accept it as a single-element list rather than
-            # failing outright, since one valid image beats zero.
-            single = (data.get("image_prompt") or "").strip()
-            raw_prompts = [single] if single else []
-
-        image_prompts = [p.strip() for p in raw_prompts if isinstance(p, str) and p.strip()]
-        if not image_prompts:
+        prompt_entries = _parse_prompt_entries(data)
+        if not prompt_entries:
             raise RuntimeError("Image prompt generation returned no non-empty image_prompts.")
 
         return {
-            "image_prompts": image_prompts,
+            "image_prompts": [e["prompt"] for e in prompt_entries],
+            "prompt_entries": prompt_entries,
             "negative_prompt": (data.get("negative_prompt") or "").strip(),
             "alt_text": (data.get("alt_text") or "").strip(),
             "tags": data.get("tags") or [],
             "summary": (data.get("summary") or "").strip(),
+        }
+
+    def validate_image_prompt_package(
+        self,
+        system_prompt: str,
+        content_type: str,
+        mode: str,
+        generated_content: str,
+        prompt_entries: List[dict],
+        negative_prompt: str,
+        alt_text: str,
+        tags: List[str],
+        summary: str,
+        industry: Optional[str] = None,
+    ) -> dict:
+        """Image Prompt Validator: the second-pass QA step (see
+        prompts/image_prompt_validator_system.txt) that checks each of
+        the drafting agent's three prompt_entries against the Generated
+        Content — content grounding, semantic match, industry
+        consistency, specificity, the Generic Image Test, the Content
+        Type Test, and distinctness — and rewrites any that fail, BEFORE
+        anything is sent to Freepik. Returns the same shape as
+        generate_image_prompt_package() above (image_prompts,
+        prompt_entries, negative_prompt, alt_text, tags, summary), plus
+        prompt_entries carrying "passed"/"reason" for logging.
+
+        This call reuses whichever LLM instance it's invoked on (the
+        same image_prompt_llm the drafting call used) — no separate
+        model or external service is introduced.
+        """
+        from app.services.prompt_builder import build_image_prompt_validation_request
+
+        user_prompt = build_image_prompt_validation_request(
+            content_type=content_type,
+            mode=mode,
+            generated_content=generated_content,
+            draft_entries=prompt_entries,
+            negative_prompt=negative_prompt,
+            alt_text=alt_text,
+            tags=tags,
+            summary=summary,
+            industry=industry,
+        )
+        raw = _strip_code_fences(self._call_llm(system_prompt, user_prompt).strip())
+
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"Image prompt validation did not return valid JSON: {exc}\n"
+                f"Raw response: {raw[:500]}"
+            ) from exc
+
+        validated_entries = _parse_prompt_entries(data, keep_validation_fields=True)
+        if not validated_entries:
+            raise RuntimeError("Image prompt validation returned no non-empty image_prompts.")
+
+        return {
+            "image_prompts": [e["prompt"] for e in validated_entries],
+            "prompt_entries": validated_entries,
+            "negative_prompt": (data.get("negative_prompt") or "").strip() or negative_prompt,
+            "alt_text": (data.get("alt_text") or "").strip() or alt_text,
+            "tags": data.get("tags") or tags,
+            "summary": (data.get("summary") or "").strip() or summary,
         }
 
 

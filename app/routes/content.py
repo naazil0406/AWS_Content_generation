@@ -48,8 +48,13 @@ def list_content_types() -> dict:
 
 @router.post("/generate", response_model=GenerateContentResponse)
 def generate(request: GenerateContentRequest) -> GenerateContentResponse:
-    """Generate structured AI content plus three image variations for
-    the given prompt and content type.
+    """Generate content for the given prompt/content type/industry, and
+    — only when request.generate_images is True (the "Generate + Image"
+    action) — also generate three grounded image variations for it.
+
+    When request.generate_images is False (the plain "Generate" action),
+    this returns content only: the Image Prompt Agent, Freepik, and S3
+    image upload are never invoked.
     """
     engine = _build_engine()
 
@@ -57,6 +62,8 @@ def generate(request: GenerateContentRequest) -> GenerateContentResponse:
         result = engine.generate(
             prompt=request.prompt,
             content_type=request.content_type,
+            industry=request.industry,
+            generate_images=request.generate_images,
             monthly_topic_content=request.monthly_topic_content,
             common_data=request.common_data,
             web_results=request.web_results,
@@ -71,6 +78,10 @@ def generate(request: GenerateContentRequest) -> GenerateContentResponse:
     except Exception:
         logger.exception("Unexpected error during content generation.")
         raise HTTPException(status_code=500, detail="An unexpected error occurred.")
+
+    if not request.generate_images:
+        # "Generate" action: content-only response, no images.
+        return build_response(result, [])
 
     try:
         images = generate_variations(
@@ -180,6 +191,8 @@ def generate_stream(request: GenerateContentRequest):
                 result = engine.generate(
                     prompt=request.prompt,
                     content_type=request.content_type,
+                    industry=request.industry,
+                    generate_images=request.generate_images,
                     monthly_topic_content=request.monthly_topic_content,
                     common_data=request.common_data,
                     web_results=request.web_results,
@@ -195,8 +208,17 @@ def generate_stream(request: GenerateContentRequest):
                 "tags": result.get("tags", []),
                 "alt_text": result.get("alt_text", ""),
                 "image_prompts": result["image_prompts"],
+                "content_anchors": result.get("content_anchors", []),
                 "negative_prompt": result.get("negative_prompt", ""),
+                "industry": result.get("selected_industry", ""),
             })
+
+            if not request.generate_images:
+                # "Generate" action: content-only — no Image Prompt Agent,
+                # no Freepik, no S3. Finish the stream right here.
+                response = build_response(result, [])
+                yield _sse("done", response.model_dump())
+                return
 
             # Whatever time is left of the total budget goes to image
             # generation; S3 uploads are fast (~1-2s total, parallel) so

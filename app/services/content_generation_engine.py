@@ -27,6 +27,7 @@ from app.services.prompt_builder import (
     image_mode_for_content_type,
     load_content_generation_system_prompt,
     load_image_prompt_system_prompt,
+    load_image_prompt_validator_system_prompt,
     negative_prompt_for_mode,
     pick_daily_tip_focus,
     pick_industry,
@@ -76,13 +77,37 @@ class ContentGenerationEngine:
         self,
         prompt: str,
         content_type: str,
+        industry: Optional[str] = None,
+        generate_images: bool = True,
         monthly_topic_content: Optional[str] = None,
         common_data: Optional[str] = None,
         web_results: Optional[str] = None,
         avoid_repeating: Optional[List[str]] = None,
         previous_industry: Optional[str] = None,
     ) -> dict:
-        """Run the full engine pipeline for one request.
+        """Run the engine pipeline for one request.
+
+        industry: an explicit industry to use for this request, if the
+          caller has one (e.g. "Manufacturing"). If omitted, the engine
+          randomly selects exactly ONE industry from the single-source
+          list in prompts/image_prompt_system.txt (see
+          prompt_builder.pick_industry()) — never hardcoded to one
+          industry, and never re-picked per call within this request.
+          Either way, the resolved value (see `selected_industry` in the
+          returned dict) is passed IDENTICALLY to the Content Generation
+          Agent and — when generate_images is True — the Image Prompt
+          Agent, so the generated story and all three images share one
+          consistent professional context. Neither agent ever picks its
+          own industry independently.
+
+        generate_images: True runs the full pipeline (content, then the
+          Image Prompt Agent for exactly three grounded prompts). False
+          (the "Generate" action — content only) stops right after
+          content generation and never calls the Image Prompt Agent at
+          all — not even to discard its output — per the "Generate must
+          be content-only" requirement. The randomly-selected industry
+          still applies to the content in this case; only the image half
+          of the pipeline is skipped.
 
         avoid_repeating: previously-generated content for this same
           (content_type, prompt) pair, e.g. supplied by a caller that
@@ -90,17 +115,24 @@ class ContentGenerationEngine:
           repeat or lightly reword any of these. Optional — a one-off
           generation doesn't need it.
 
-        previous_industry: the industry (from _INDUSTRIES in
-          prompt_builder.py) used for this same caller's immediately
-          preceding piece of content, if the caller tracks it. Used only
-          as a fallback suggestion for content that names no specific
-          industry itself, so consecutive generic-content images don't
-          converge on the same industry. Optional — a one-off generation
-          doesn't need it.
+        previous_industry: the industry used for this same caller's
+          immediately preceding piece of content, if the caller tracks
+          it. Used only to steer the random pick away from repeating the
+          same industry twice in a row when no explicit `industry` is
+          given — never consulted when `industry` above is given.
+          Optional — a one-off generation doesn't need it.
 
         Returns a dict with keys: content_text, image_prompts,
-        negative_prompt, alt_text, tags, summary, context_chunks,
-        daily_tip_focus, suggested_industry.
+        content_anchors, visual_concepts, negative_prompt, alt_text,
+        tags, summary, context_chunks, daily_tip_focus,
+        selected_industry. `selected_industry` is always populated — the
+        single industry (explicit or randomly chosen) used throughout
+        this request. `content_anchors`/`visual_concepts` are the
+        traceability data (which phrase/clause of content_text each
+        image_prompts entry represents) produced by the drafting call and
+        checked/corrected by the validation pass below — see step 4.
+        When generate_images is False, image_prompts and friends are
+        empty/blank — the Image Prompt Agent was never called.
         """
         topic = (prompt or "").strip()
         if not topic:
@@ -109,6 +141,7 @@ class ContentGenerationEngine:
             raise ValueError(
                 f"Unsupported content_type '{content_type}'. Supported types: {', '.join(CONTENT_TYPES)}"
             )
+        industry = (industry or "").strip() or None
 
         # 1 & 2: retrieve and analyze Knowledge Base context.
         try:
@@ -135,7 +168,11 @@ class ContentGenerationEngine:
         img_sys_prompt = load_image_prompt_system_prompt()
 
         daily_tip_focus = pick_daily_tip_focus() if content_type == "Daily Tip" else None
-        suggested_industry = pick_industry(avoid=previous_industry)
+        # Resolve exactly ONE industry for this entire request, once,
+        # right here — before either agent runs. Both agents below
+        # receive this same `selected_industry` value; neither is ever
+        # allowed to pick its own.
+        selected_industry = industry or pick_industry(avoid=previous_industry)
 
         try:
             if content_type == "Daily Tip":
@@ -154,6 +191,7 @@ class ContentGenerationEngine:
                     content_type=content_type,
                     topic=topic,
                     context_chunks=context_chunks,
+                    industry=selected_industry,
                     monthly_topic_content=monthly_topic_content,
                     common_data=common_data,
                     web_results=web_results,
@@ -167,6 +205,25 @@ class ContentGenerationEngine:
         if not content_text.strip():
             raise ContentGenerationError("Generated content was empty.")
 
+        if not generate_images:
+            # "Generate" action: content-only. The Image Prompt Agent must
+            # never be called here — not Freepik, not S3, not even a
+            # discarded call — per the content-only requirement. The
+            # selected industry still applied to the content above.
+            return {
+                "content_text": content_text,
+                "image_prompts": [],
+                "content_anchors": [],
+                "visual_concepts": [],
+                "negative_prompt": "",
+                "alt_text": "",
+                "tags": [],
+                "summary": "",
+                "context_chunks": context_chunks,
+                "daily_tip_focus": daily_tip_focus,
+                "selected_industry": selected_industry,
+            }
+
         try:
             image_package = self.image_prompt_llm.generate_image_prompt_package(
                 system_prompt=img_sys_prompt,
@@ -175,7 +232,7 @@ class ContentGenerationEngine:
                 generated_content=content_text,
                 context_chunks=context_chunks,
                 mode=mode,
-                suggested_industry=suggested_industry,
+                industry=selected_industry,
             )
         except Exception as exc:
             logger.error("Image prompt generation failed: %s", exc)
@@ -184,19 +241,62 @@ class ContentGenerationEngine:
         if not image_package.get("image_prompts"):
             raise ContentGenerationError("Generated image prompt list was empty.")
 
+        # 4. Second-pass validation — BEFORE anything reaches Freepik.
+        # The drafting call above can still produce a prompt that's
+        # merely industry-flavored (a farm glove, a boot, a wrench)
+        # rather than genuinely grounded in content_text; this is exactly
+        # the failure mode prompts/image_prompt_validator_system.txt
+        # exists to catch and fix. Reuses the same image_prompt_llm
+        # instance — no new model or external service. Best-effort: if
+        # the validator call itself fails or returns something
+        # unusable, log it and fall back to the (still individually
+        # instructed-to-be-grounded) drafts rather than failing the
+        # whole request over a QA-step hiccup.
+        prompt_entries = image_package.get("prompt_entries") or [
+            {"content_anchor": "", "visual_concept": "", "prompt": p} for p in image_package["image_prompts"]
+        ]
+        try:
+            validator_sys_prompt = load_image_prompt_validator_system_prompt()
+            validated_package = self.image_prompt_llm.validate_image_prompt_package(
+                system_prompt=validator_sys_prompt,
+                content_type=content_type,
+                mode=mode,
+                generated_content=content_text,
+                prompt_entries=prompt_entries,
+                negative_prompt=image_package.get("negative_prompt", ""),
+                alt_text=image_package.get("alt_text", ""),
+                tags=image_package.get("tags", []),
+                summary=image_package.get("summary", ""),
+                industry=selected_industry,
+            )
+            if validated_package.get("image_prompts"):
+                for entry in validated_package.get("prompt_entries", []):
+                    if not entry.get("passed", True):
+                        logger.info(
+                            "Image prompt validator corrected an entry (anchor=%r): %s",
+                            entry.get("content_anchor", ""), entry.get("reason", ""),
+                        )
+                image_package = validated_package
+        except Exception as exc:  # noqa: BLE001 - validation is best-effort, never fatal
+            logger.warning("Image prompt validation step failed, using unvalidated drafts: %s", exc)
+
+        prompt_entries = image_package.get("prompt_entries") or prompt_entries
+
         # Fall back to mode-specific fixed negative prompt if model returned an empty string.
         negative_prompt = image_package.get("negative_prompt", "").strip() or negative_prompt_for_mode(mode)
 
         return {
             "content_text": content_text,
             "image_prompts": image_package["image_prompts"],
+            "content_anchors": [e.get("content_anchor", "") for e in prompt_entries],
+            "visual_concepts": [e.get("visual_concept", "") for e in prompt_entries],
             "negative_prompt": negative_prompt,
             "alt_text": image_package.get("alt_text", ""),
             "tags": image_package.get("tags", []),
             "summary": image_package.get("summary", ""),
             "context_chunks": context_chunks,
             "daily_tip_focus": daily_tip_focus,
-            "suggested_industry": suggested_industry,
+            "selected_industry": selected_industry,
         }
 
     def _generate_daily_tip(

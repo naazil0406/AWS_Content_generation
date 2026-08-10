@@ -17,9 +17,11 @@ def build_response(engine_result: dict, image_urls: List[str]) -> GenerateConten
         title=engine_result.get("summary", "")[:80],
         summary=engine_result.get("summary", ""),
         content=engine_result["content_text"],
+        industry=engine_result.get("selected_industry") or "",
         hashtags=engine_result.get("tags", []),
         cta="",
         image_prompt=image_prompts[0] if image_prompts else "",
         image_prompts=image_prompts,
+        content_anchors=engine_result.get("content_anchors") or [],
     )
     return GenerateContentResponse(content=content, images=image_urls)
