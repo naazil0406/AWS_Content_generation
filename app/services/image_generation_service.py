@@ -118,9 +118,28 @@ class FreepikImageService:
         filter_nsfw: bool,
         poll_interval: float,
         poll_timeout: float,
+        max_concurrent_submissions: int = 1,
+        submit_max_retries: int = 2,
+        submit_retry_backoff: float = 0.75,
     ):
         if not api_key:
-            raise RuntimeError("FREEPIK_API_KEY is not set — required when IMAGE_PROVIDER='freepik'.")
+            raise RuntimeError(
+                "FREEPIK_API_KEY is not set — required when IMAGE_PROVIDER='freepik'. "
+                "If you've already added this key via `sam deploy` or the Lambda console "
+                "and are still seeing this: Lambda versions freeze their environment "
+                "variables at publish time, so `aws lambda get-function-configuration` "
+                "(which reads $LATEST by default) can show the key while the specific "
+                "version the 'prod' alias actually points to — the one really serving "
+                "traffic — was published before the key existed and has none. Check the "
+                "version this exact request ran on via this log line's own cold-start "
+                "message (search CloudWatch for 'Cold start' — it logs the version and "
+                "whether the key was set for THAT version), or re-run "
+                "`aws lambda get-function-configuration --qualifier prod` to check prod's "
+                "actual version rather than $LATEST. The fix is a fresh `sam deploy` with "
+                "the key in --parameter-overrides, which publishes a new version with the "
+                "key baked in and moves prod to it — editing $LATEST directly never "
+                "moves prod."
+            )
         self.api_key = api_key
         self.model = model
         self.resolution = resolution
@@ -128,6 +147,14 @@ class FreepikImageService:
         self.filter_nsfw = filter_nsfw
         self.poll_interval = poll_interval
         self.poll_timeout = poll_timeout
+        self.submit_max_retries = max(0, submit_max_retries)
+        self.submit_retry_backoff = submit_retry_backoff
+        # Shared across this instance's worker threads (generate_variations()
+        # creates ONE FreepikImageService and calls .generate_image() on it
+        # from all 3 threads for a single request) — never across separate
+        # users' concurrent requests, since each request builds its own
+        # instance via get_image_gen_service().
+        self._submit_semaphore = threading.Semaphore(max(1, max_concurrent_submissions))
         self.submit_url = self._FLUX_ENDPOINTS.get(model, self._MYSTIC_URL)
         self.is_mystic = self.submit_url == self._MYSTIC_URL
 
@@ -137,14 +164,29 @@ class FreepikImageService:
 
     def _build_body(self, full_prompt: str) -> dict:
         if self.is_mystic:
-            return {
+            body = {
                 "prompt": full_prompt,
-                "model": self.model,
                 "resolution": self.resolution,
                 "aspect_ratio": self.aspect_ratio,
                 "filter_nsfw": self.filter_nsfw,
             }
+            # Only include "model" when FREEPIK_MODEL was actually set to
+            # something. self.model defaults to "" (see
+            # settings.FREEPIK_MODEL in config.py) when unset, and sending
+            # that empty string to Freepik as the "model" field is invalid
+            # — Freepik's Mystic endpoint rejects it with a 400 Bad Request
+            # (this was a real bug: the code correctly fell through to the
+            # generic Mystic endpoint on an empty/unrecognized model name,
+            # but then still forwarded that same empty string in the
+            # request body instead of omitting the field). Omitting it
+            # lets Freepik apply its own default model instead.
+            if self.model:
+                body["model"] = self.model
+            return body
         return {"prompt": full_prompt, "aspect_ratio": self.aspect_ratio}
+
+    def _model_label(self) -> str:
+        return self.model or "(Mystic default)"
 
     def generate_image(self, prompt: str, negative_prompt: str = "", on_progress: ProgressCallback = None) -> bytes:
         on_progress = on_progress or _noop_progress
@@ -152,18 +194,14 @@ class FreepikImageService:
         headers = {"Content-Type": "application/json", "x-freepik-api-key": self.api_key}
         body = self._build_body(full_prompt)
 
-        logger.info("Submitting to Freepik (model=%s, prompt=%d chars).", self.model, len(prompt))
-        on_progress("submitted", {"provider": "freepik", "model": self.model})
-        try:
-            response = requests.post(self.submit_url, headers=headers, json=body, timeout=30)
-            response.raise_for_status()
-        except requests.RequestException as exc:
-            raise RuntimeError(f"Freepik submission failed for model '{self.model}': {exc}") from exc
+        logger.info("Submitting to Freepik (model=%s, prompt=%d chars).", self._model_label(), len(prompt))
+        on_progress("submitted", {"provider": "freepik", "model": self._model_label()})
+        response = self._submit_with_retry(body, headers)
 
         task = (response.json() or {}).get("data", {})
         task_id = task.get("task_id")
         if not task_id:
-            raise RuntimeError(f"Freepik ({self.model}) did not return a task_id.")
+            raise RuntimeError(f"Freepik ({self._model_label()}) did not return a task_id.")
 
         image_url = self._poll_until_complete(task_id, headers, on_progress)
         on_progress("downloading", {})
@@ -177,6 +215,45 @@ class FreepikImageService:
             raise RuntimeError("Freepik image download returned no data.")
         on_progress("completed", {})
         return image_response.content
+
+    def _submit_with_retry(self, body: dict, headers: dict) -> "requests.Response":
+        """POSTs to submit_url, serialized against this instance's other
+        in-flight images via _submit_semaphore and retried up to
+        submit_max_retries times on any failure.
+
+        Why: observed in production, 2 of 3 truly-simultaneous submissions
+        for the same request failed at the same millisecond with
+        DIFFERENT error codes (401 on one, 422 on another) for otherwise
+        identical requests — the signature of a collision at Freepik's
+        gateway (a real bad key/payload fails every attempt identically;
+        this doesn't). The semaphore avoids re-creating that collision on
+        retry; the retry recovers from it if it still happens anyway.
+        Only the fast initial POST goes through this — polling and
+        downloading (the slow ~90-130s part for Mystic) are untouched and
+        still run fully in parallel across images.
+        """
+        last_exc: Optional[Exception] = None
+        attempts = self.submit_max_retries + 1
+        for attempt in range(1, attempts + 1):
+            with self._submit_semaphore:
+                try:
+                    response = requests.post(self.submit_url, headers=headers, json=body, timeout=30)
+                    response.raise_for_status()
+                    return response
+                except requests.RequestException as exc:
+                    last_exc = exc
+                    status = getattr(exc.response, "status_code", None)
+                    logger.warning(
+                        "Freepik submission attempt %d/%d failed for model '%s' (status=%s): %s",
+                        attempt, attempts, self._model_label(), status, exc,
+                    )
+            if attempt < attempts:
+                time.sleep(self.submit_retry_backoff * attempt)  # linear backoff: 0.75s, 1.5s, ...
+
+        raise RuntimeError(
+            f"Freepik submission failed for model '{self._model_label()}' after {attempts} attempt(s): {last_exc}"
+        ) from last_exc
+
 
     def _poll_until_complete(self, task_id: str, headers: dict, on_progress: ProgressCallback = None) -> str:
         on_progress = on_progress or _noop_progress
@@ -317,6 +394,9 @@ def get_image_gen_service(poll_timeout_override: Optional[float] = None):
         filter_nsfw=settings.FREEPIK_FILTER_NSFW,
         poll_interval=settings.FREEPIK_POLL_INTERVAL,
         poll_timeout=poll_timeout_override if poll_timeout_override is not None else settings.FREEPIK_POLL_TIMEOUT,
+        max_concurrent_submissions=settings.FREEPIK_MAX_CONCURRENT_SUBMISSIONS,
+        submit_max_retries=settings.FREEPIK_SUBMIT_MAX_RETRIES,
+        submit_retry_backoff=settings.FREEPIK_SUBMIT_RETRY_BACKOFF_SECONDS,
     )
 
 

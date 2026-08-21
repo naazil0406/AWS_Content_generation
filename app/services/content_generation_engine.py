@@ -19,11 +19,13 @@ interfaces, which are injected in, so it stays easy to test and reuse.
 import logging
 from typing import List, Optional
 
+from app.config import settings
 from app.schemas.content import CONTENT_TYPES
 from app.services.knowledge_base_service import KnowledgeBaseService
 from app.services.llm_service import BaseLLMService
 from app.services.prompt_builder import (
     build_combined_system_prompt,
+    detect_explicit_industry,
     image_mode_for_content_type,
     load_content_generation_system_prompt,
     load_image_prompt_system_prompt,
@@ -63,15 +65,20 @@ class ContentGenerationEngine:
         content_llm: Optional[BaseLLMService] = None,
         image_prompt_llm: Optional[BaseLLMService] = None,
         llm: Optional[BaseLLMService] = None,
+        combined_llm: Optional[BaseLLMService] = None,
     ):
         """`content_llm` generates the educational text; `image_prompt_llm`
         turns that text into a focused visual prompt for image models.
+        `combined_llm` is only ever used when settings.USE_COMBINED_GENERATION_CALL
+        is true (see generate() below) — constructed lazily so nothing
+        changes for the default configuration where it's never touched.
         """
         from app.services.llm_service import get_content_llm, get_image_prompt_llm
 
         self.knowledge_base = knowledge_base
         self.content_llm = content_llm or llm or get_content_llm()
         self.image_prompt_llm = image_prompt_llm or llm or get_image_prompt_llm()
+        self._combined_llm = combined_llm or llm
 
     def generate(
         self,
@@ -159,10 +166,20 @@ class ContentGenerationEngine:
         # this method did, passing `topic` into the image-prompt call) broke
         # that contract: the image prompt ended up generated blind from a
         # one-line topic instead of from what the content actually says,
-        # producing images that don't match the generated content. If you
-        # need the latency back, use the combined single-call path
-        # (get_combined_llm() / generate_combined_package()) instead of
-        # reintroducing parallelism here.
+        # producing images that don't match the generated content.
+        #
+        # settings.USE_COMBINED_GENERATION_CALL (default False) offers a
+        # middle ground instead of reintroducing that parallelism: when
+        # true, content generation AND image-prompt drafting happen in ONE
+        # LLM call (generate_combined_package(), see llm_service.py) rather
+        # than two sequential ones — content_text is still produced first,
+        # within that same call, and the drafted image_prompts are still
+        # required to be derived from it, just without a second network
+        # round trip. The dedicated validator step below (step 4) still
+        # runs identically afterward either way, so combined mode saves
+        # one of three model calls, not the rigor a validator pass adds.
+        # Daily Tip never uses combined mode — _generate_daily_tip()'s
+        # word-count retry contract doesn't fit the combined JSON format.
         mode = image_mode_for_content_type(content_type)
         content_sys_prompt = load_content_generation_system_prompt()
         img_sys_prompt = load_image_prompt_system_prompt()
@@ -172,7 +189,37 @@ class ContentGenerationEngine:
         # right here — before either agent runs. Both agents below
         # receive this same `selected_industry` value; neither is ever
         # allowed to pick its own.
-        selected_industry = industry or pick_industry(avoid=previous_industry)
+        #
+        # Priority, matching "explicit always wins, random is a last
+        # resort and should still be relevant":
+        #   1. `industry` — an explicit value the caller passed directly
+        #      (kept for backward compatibility with any caller that
+        #      still sets this; the current UI does not, since its
+        #      Industry dropdown was removed and it always sends None).
+        #   2. detect_explicit_industry(topic) — the user named a
+        #      specific industry (or a recognized alias, e.g. "hospital"
+        #      for Healthcare) directly in their free-text topic. This
+        #      is the fix: previously nothing ever checked the topic
+        #      text itself, so an explicit mention there was silently
+        #      ignored and a random industry was picked anyway on every
+        #      single request.
+        #   3. pick_industry(topic, avoid=...) — no explicit mention
+        #      anywhere; pick randomly, but biased toward industries
+        #      whose contextual hints (objects/roles/hazards) actually
+        #      appear in the topic, so the random pick is topic-relevant
+        #      rather than arbitrary — see prompt_builder.py.
+        selected_industry = (
+            industry
+            or detect_explicit_industry(topic)
+            or pick_industry(topic=topic, avoid=previous_industry)
+        )
+
+        use_combined = (
+            settings.USE_COMBINED_GENERATION_CALL
+            and generate_images
+            and content_type != "Daily Tip"
+        )
+        image_package: Optional[dict] = None  # populated by the combined call below, if used
 
         try:
             if content_type == "Daily Tip":
@@ -185,6 +232,36 @@ class ContentGenerationEngine:
                     avoid_repeating=avoid_repeating,
                     focus=daily_tip_focus,
                 )
+            elif use_combined:
+                from app.services.llm_service import get_combined_llm
+                from app.services.prompt_builder import build_combined_system_prompt
+
+                combined_llm = self._combined_llm or get_combined_llm()
+                combined_result = combined_llm.generate_combined_package(
+                    system_prompt=build_combined_system_prompt(),
+                    content_type=content_type,
+                    topic=topic,
+                    context_chunks=context_chunks,
+                    mode=mode,
+                    industry=selected_industry,
+                    monthly_topic_content=monthly_topic_content,
+                    common_data=common_data,
+                    web_results=web_results,
+                    daily_tip_focus=daily_tip_focus,
+                    avoid_repeating=avoid_repeating,
+                )
+                content_text = combined_result["content_text"]
+                # Same shape generate_image_prompt_package() would have
+                # returned — the validator step below treats this
+                # identically regardless of which path produced it.
+                image_package = {
+                    "image_prompts": combined_result["image_prompts"],
+                    "prompt_entries": combined_result["prompt_entries"],
+                    "negative_prompt": combined_result["negative_prompt"],
+                    "alt_text": combined_result["alt_text"],
+                    "tags": combined_result["tags"],
+                    "summary": combined_result["summary"],
+                }
             else:
                 content_text = self.content_llm.generate_content(
                     system_prompt=content_sys_prompt,
@@ -224,19 +301,22 @@ class ContentGenerationEngine:
                 "selected_industry": selected_industry,
             }
 
-        try:
-            image_package = self.image_prompt_llm.generate_image_prompt_package(
-                system_prompt=img_sys_prompt,
-                content_type=content_type,
-                topic=topic,
-                generated_content=content_text,
-                context_chunks=context_chunks,
-                mode=mode,
-                industry=selected_industry,
-            )
-        except Exception as exc:
-            logger.error("Image prompt generation failed: %s", exc)
-            raise ContentGenerationError("Failed to generate image prompt from content.") from exc
+        if image_package is None:
+            # Combined mode wasn't used (or wasn't eligible) — run the
+            # separate Image Prompt Agent call, exactly as before.
+            try:
+                image_package = self.image_prompt_llm.generate_image_prompt_package(
+                    system_prompt=img_sys_prompt,
+                    content_type=content_type,
+                    topic=topic,
+                    generated_content=content_text,
+                    context_chunks=context_chunks,
+                    mode=mode,
+                    industry=selected_industry,
+                )
+            except Exception as exc:
+                logger.error("Image prompt generation failed: %s", exc)
+                raise ContentGenerationError("Failed to generate image prompt from content.") from exc
 
         if not image_package.get("image_prompts"):
             raise ContentGenerationError("Generated image prompt list was empty.")

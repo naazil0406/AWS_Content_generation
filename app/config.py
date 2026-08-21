@@ -45,17 +45,47 @@ class Settings:
     KNOWLEDGE_BASE_MAX_RETRIES: int = int(os.getenv("KNOWLEDGE_BASE_MAX_RETRIES", "5"))
     KNOWLEDGE_BASE_RETRY_BACKOFF_SECONDS: float = float(os.getenv("KNOWLEDGE_BASE_RETRY_BACKOFF_SECONDS", "1.5"))
     KNOWLEDGE_BASE_RESUME_WAIT_SECONDS: float = float(os.getenv("KNOWLEDGE_BASE_RESUME_WAIT_SECONDS", "20.0"))
+    # Passed into the boto3/botocore Config() for the bedrock-agent-runtime
+    # client in knowledge_base_service.py — same pattern as
+    # BEDROCK_CONNECT_TIMEOUT_SECONDS/BEDROCK_READ_TIMEOUT_SECONDS below.
+    # connect_timeout is just the TCP handshake, NOT the Aurora
+    # auto-pause resume wait — that's already handled separately by
+    # KNOWLEDGE_BASE_RESUME_WAIT_SECONDS + the retry loop above, so this
+    # can stay short.
+    KNOWLEDGE_BASE_CONNECT_TIMEOUT_SECONDS: float = float(os.getenv("KNOWLEDGE_BASE_CONNECT_TIMEOUT_SECONDS", "10.0"))
+    KNOWLEDGE_BASE_READ_TIMEOUT_SECONDS: float = float(os.getenv("KNOWLEDGE_BASE_READ_TIMEOUT_SECONDS", "30.0"))
 
     # --- LLM provider: AWS Bedrock (only supported provider) ---
     LLM_PROVIDER: str = "bedrock"
     BEDROCK_REGION: str = os.getenv("BEDROCK_REGION", os.getenv("AWS_REGION", "us-east-1"))
     AWS_ACCESS_KEY_ID: str = os.getenv("AWS_ACCESS_KEY_ID", "").strip()
     AWS_SECRET_ACCESS_KEY: str = os.getenv("AWS_SECRET_ACCESS_KEY", "").strip()
+    # Passed into the boto3/botocore Config() for the Bedrock client in
+    # llm_service.py's BedrockLLMService.__init__. connect_timeout caps
+    # how long to wait to establish the TCP connection; read_timeout caps
+    # how long to wait for Bedrock's response once the request is sent
+    # (generation can legitimately take a while, hence the higher default);
+    # max_attempts is botocore's own internal retry count for this client,
+    # separate from this project's own HTTP_MAX_RETRIES/HTTP_BACKOFF_SECONDS
+    # retry loop further down.
+    BEDROCK_CONNECT_TIMEOUT_SECONDS: float = float(os.getenv("BEDROCK_CONNECT_TIMEOUT_SECONDS", "10.0"))
+    BEDROCK_READ_TIMEOUT_SECONDS: float = float(os.getenv("BEDROCK_READ_TIMEOUT_SECONDS", "60.0"))
+    BEDROCK_MAX_ATTEMPTS: int = int(os.getenv("BEDROCK_MAX_ATTEMPTS", "3"))
 
     # --- Content Generation Agent (structured learner-facing content) ---
     CONTENT_MODEL: str = os.getenv("CONTENT_MODEL", "amazon.nova-micro-v1:0")
     CONTENT_MAX_TOKENS: int = int(os.getenv("CONTENT_MAX_TOKENS", "400"))
     CONTENT_TEMPERATURE: float = float(os.getenv("CONTENT_TEMPERATURE", "0.7"))
+    # Gates whether content_generation_engine.py uses llm_service.py's
+    # get_combined_llm()/generate_combined_package() path (one LLM call
+    # producing both the content AND the draft image prompts together)
+    # instead of the separate Content Generation Agent + Image Prompt
+    # Generation Agent calls described in this project's README. Defaults
+    # to False to preserve that documented two-call (plus validator)
+    # pipeline unless explicitly opted into — flip to true only after
+    # confirming generate_combined_package()'s output still gets validated
+    # the same way the separate path's does.
+    USE_COMBINED_GENERATION_CALL: bool = os.getenv("USE_COMBINED_GENERATION_CALL", "false").strip().lower() == "true"
 
     # --- Image Prompt Generation Agent (turns content into an image prompt) ---
     IMAGE_PROMPT_MODEL: str = os.getenv("IMAGE_PROMPT_MODEL", "amazon.nova-lite-v1:0")
@@ -106,6 +136,28 @@ class Settings:
     FREEPIK_FILTER_NSFW: bool = os.getenv("FREEPIK_FILTER_NSFW", "true").strip().lower() == "true"
     FREEPIK_POLL_INTERVAL: float = float(os.getenv("FREEPIK_POLL_INTERVAL", "3.0"))
     FREEPIK_POLL_TIMEOUT: float = float(os.getenv("FREEPIK_POLL_TIMEOUT", "120.0"))
+    # Freepik's gateway appears to reject some fraction of truly
+    # simultaneous submissions from the same API key/plan — observed in
+    # production as 2 of 3 parallel image requests failing at the same
+    # millisecond with DIFFERENT error codes (401 on one, 422 on
+    # another) for otherwise-identical requests, which is the signature
+    # of a collision at their gateway rather than a deterministic config
+    # problem (a real bad key/payload would fail all three identically).
+    # Only the initial POST to submit_url is serialized through this —
+    # the slow part (polling + download, ~90-130s for Mystic) still runs
+    # fully in parallel across the 3 images, so this costs at most a
+    # couple of quick sequential POSTs' worth of latency, not 3x the
+    # total time. Default 1 = fully serialized submissions; raise if
+    # Freepik's actual plan limit turns out to allow more than one
+    # in-flight submission.
+    FREEPIK_MAX_CONCURRENT_SUBMISSIONS: int = int(os.getenv("FREEPIK_MAX_CONCURRENT_SUBMISSIONS", "1"))
+    # Extra attempts (beyond the first) for the initial submission only,
+    # if it fails for ANY reason — including the 401/422 collision above,
+    # but also covers ordinary transient network blips. A genuinely bad
+    # key/payload will still fail every attempt and surface the same
+    # error, just after a short, bounded delay instead of immediately.
+    FREEPIK_SUBMIT_MAX_RETRIES: int = int(os.getenv("FREEPIK_SUBMIT_MAX_RETRIES", "2"))
+    FREEPIK_SUBMIT_RETRY_BACKOFF_SECONDS: float = float(os.getenv("FREEPIK_SUBMIT_RETRY_BACKOFF_SECONDS", "0.75"))
 
     # --- Generated Image Storage (S3) ---
     # Images are uploaded here and served back to the client as presigned
@@ -130,19 +182,6 @@ class Settings:
     # --- Retries (external API calls: KB, LLM, image provider) ---
     HTTP_MAX_RETRIES: int = int(os.getenv("HTTP_MAX_RETRIES", "3"))
     HTTP_BACKOFF_SECONDS: float = float(os.getenv("HTTP_BACKOFF_SECONDS", "1.5"))
-
-    # --- Campaign Document Upload (new Bedrock KB Data Source) ---
-    # Uploaded files land in this S3 prefix, then trigger an ingestion job
-    # scoped ONLY to UPLOAD_DATA_SOURCE_ID. The existing data source in
-    # the same Knowledge Base (KNOWLEDGE_BASE_ID above) is never touched
-    # by this — see app/services/ingestion_service.py. Once ingestion
-    # completes, uploaded documents are automatically retrievable through
-    # the existing KnowledgeBaseService.retrieve() with zero code changes
-    # there, since Bedrock KB retrieval searches across all data sources
-    # in a Knowledge Base.
-    UPLOAD_BUCKET_NAME: str = os.getenv("UPLOAD_BUCKET_NAME", "")
-    UPLOAD_PREFIX: str = os.getenv("UPLOAD_PREFIX", "campaigns/")
-    UPLOAD_DATA_SOURCE_ID: str = os.getenv("UPLOAD_DATA_SOURCE_ID", "")
 
     # --- Logging ---
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")

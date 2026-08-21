@@ -1,0 +1,90 @@
+name: Deploy AI Content Generation Service
+
+# Triggers a SAM build + deploy on every push to main. Each deploy that
+# changes function code/config publishes a new immutable Lambda version
+# and SAM/CodeDeploy shifts the "prod" alias to it per template.yaml's
+# DeploymentPreference (canary/linear with auto-rollback on the
+# ProdAliasErrorAlarm, or AllAtOnce if you've set DeploymentPreferenceType
+# to that instead) — see README's "Lambda Versioning & Rollback" section.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {} # allows a manual re-run from the Actions tab
+
+permissions:
+  id-token: write # required for OIDC -> AssumeRoleWithWebIdentity, no static AWS keys stored in GitHub
+  contents: read
+
+env:
+  AWS_REGION: us-east-1 # match KnowledgeBaseRegion/your deploy region
+  SAM_STACK_NAME: ai-content-generation-service # must match the stack iam/github-actions-oidc.yaml's AppStackName was set to
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production # optional: gate this with a GitHub Environment + required reviewers
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC — no long-lived keys)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install AWS SAM CLI
+        run: pip install aws-sam-cli
+
+      # CASE 1 from the requirements (build failure -> no production
+      # change): if this step fails, the workflow stops here — no deploy
+      # step ever runs, so "prod" keeps serving whatever version it
+      # already pointed to.
+      - name: SAM build
+        run: sam build
+
+      # CASE 2 (deploy failure -> existing prod version keeps serving):
+      # CloudFormation only executes the change set if it validates
+      # cleanly, and SAM's DeploymentPreference means even a *successful*
+      # stack update doesn't cut prod over immediately for
+      # Canary/Linear types — it shifts gradually and auto-rolls-back on
+      # the ProdAliasErrorAlarm (CASE 3). Either way, a failure here
+      # leaves the previous "prod" version serving traffic untouched.
+      #
+      # --tags stamps this deployment's Git commit/ref onto every
+      # taggable resource in the stack (including the new Lambda Version
+      # CloudFormation creates) — the AWS-native way to answer "which
+      # commit produced Lambda Version N" without putting build metadata
+      # into environment variables. Query it after deploy with:
+      #   aws lambda list-tags --resource <version-arn>
+      - name: SAM deploy
+        run: |
+          sam deploy \
+            --stack-name "$SAM_STACK_NAME" \
+            --region "$AWS_REGION" \
+            --resolve-s3 \
+            --capabilities CAPABILITY_IAM \
+            --no-confirm-changeset \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides \
+              KnowledgeBaseId="${{ secrets.KNOWLEDGE_BASE_ID }}" \
+              KnowledgeBaseRegion="${{ vars.KNOWLEDGE_BASE_REGION || env.AWS_REGION }}" \
+              ImageProvider="${{ vars.IMAGE_PROVIDER || 'freepik' }}" \
+              FreepikApiKey="${{ secrets.FREEPIK_API_KEY }}" \
+              DeploymentPreferenceType="${{ vars.DEPLOYMENT_PREFERENCE_TYPE || 'Canary10Percent5Minutes' }}" \
+            --tags \
+              GitCommit="${{ github.sha }}" \
+              GitRef="${{ github.ref_name }}" \
+              DeployedBy="github-actions"
+
+      - name: Show deployed stack outputs (prod alias ARN, version, API URL)
+        run: |
+          aws cloudformation describe-stacks \
+            --stack-name "$SAM_STACK_NAME" \
+            --query "Stacks[0].Outputs" \
+            --output table

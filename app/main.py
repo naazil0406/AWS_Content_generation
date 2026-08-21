@@ -15,7 +15,12 @@ frontend and API are served from the same domain. Serving it here avoids
 a separate S3/CloudFront setup and any CORS configuration.
 """
 
+# Deploy marker (no functional effect) — bump this comment to force SAM
+# to detect a code change and publish a new Lambda version.
+# build: 2026-08-20-01
+
 import logging
+import os
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -23,10 +28,39 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from mangum import Mangum
 
-from app.routes import content, upload
+from app.routes import content
 from app.services.knowledge_base_service import KnowledgeBaseError, KnowledgeBaseService
+from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+# Lambda sets AWS_LAMBDA_FUNCTION_VERSION automatically (no template/env
+# config needed) — logged once per cold start purely so CloudWatch Logs
+# show which immutable Lambda version handled a given batch of requests,
+# which is what makes it possible to tell "Version 4's logs" apart from
+# "Version 3's logs" during a canary rollout or after a rollback. Note:
+# this is the resolved version number only — Lambda does not expose
+# which alias (e.g. "prod") was used to invoke it, since alias
+# resolution happens before your code ever runs. Application logic never
+# reads or branches on this value — see template.yaml's
+# AutoPublishAlias/DeploymentPreference for the actual versioning/
+# rollback mechanism.
+#
+# IMAGE_PROVIDER and whether FREEPIK_API_KEY is set (never the key's
+# value — presence only) are logged alongside it deliberately: since
+# each Lambda VERSION freezes its own environment variables at publish
+# time, this is what lets you look at one version's CloudWatch logs and
+# immediately see whether THAT specific version — not $LATEST, not
+# whatever `aws lambda get-function-configuration` shows without a
+# --qualifier — actually has the key baked in, without four separate
+# AWS CLI round trips to figure out a version/alias mismatch.
+logger.info(
+    "Cold start — Lambda function: %s, version: %s, image_provider: %s, freepik_key_set: %s",
+    os.environ.get("AWS_LAMBDA_FUNCTION_NAME", "n/a (not running in Lambda)"),
+    os.environ.get("AWS_LAMBDA_FUNCTION_VERSION", "n/a"),
+    settings.IMAGE_PROVIDER,
+    bool(settings.FREEPIK_API_KEY),
+)
 
 app = FastAPI(
     title="AI Content Generation Service",
@@ -48,7 +82,6 @@ app.add_middleware(
 )
 
 app.include_router(content.router, prefix="/api")
-app.include_router(upload.router, prefix="/api")
 
 # Loaded once per Lambda cold start, reused across warm invocations.
 _FRONTEND_PATH = Path(__file__).resolve().parent.parent / "frontend" / "index.html"

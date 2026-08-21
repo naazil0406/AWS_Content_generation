@@ -10,6 +10,7 @@ context into the shape both system prompts expect.
 
 import os
 import random
+import re
 from functools import lru_cache
 from typing import List, Optional, Tuple
 
@@ -60,6 +61,58 @@ _INDUSTRY_LIST_END_MARKER = "--- INDUSTRY LIST END ---"
 # hard-crash. This is not a second source of truth to keep in sync; if
 # you see this list being used, the .txt file's markers need fixing.
 _FALLBACK_INDUSTRIES: List[str] = ["Manufacturing", "Warehouse & Logistics", "Corporate Office"]
+
+# Used by detect_explicit_industry() below: if the user's topic text
+# names one of these — the canonical industry name itself, or one of
+# these short aliases — that industry is used EXACTLY as given, never
+# randomized. Keys must match load_available_industries()'s canonical
+# names exactly; an industry added to the .txt list without an entry
+# here still works, it just can't be explicitly detected by alias (the
+# canonical name itself is always checked too) and won't be favored by
+# the relevance-biased random fallback in pick_industry() below — both
+# degrade gracefully rather than erroring.
+_INDUSTRY_NAME_ALIASES: dict = {
+    "Warehouse & Logistics": ["warehouse", "logistics", "distribution center", "fulfillment center"],
+    "Manufacturing": ["manufacturing", "factory", "assembly line", "production plant"],
+    "Construction": ["construction", "construction site", "job site", "building site"],
+    "Oil & Gas": ["oil and gas", "oil & gas", "oil rig", "drilling rig", "refinery"],
+    "Mining": ["mining", "mine site", "underground mine", "quarry"],
+    "Utilities & Electrical": ["utilities", "utility", "electrical utility", "power grid", "substation"],
+    "Agriculture": ["agriculture", "farming", "farm workers", "agricultural"],
+    "Healthcare": ["healthcare", "hospital", "clinic", "medical facility"],
+    "Transportation & Fleet": ["trucking", "fleet", "delivery drivers", "transportation company"],
+    "Food & Beverage Manufacturing": ["food and beverage", "food processing", "food plant", "beverage plant"],
+    "Chemical & Petrochemical": ["chemical plant", "petrochemical", "chemical manufacturing"],
+    "Aviation": ["aviation", "airport", "airline", "aircraft maintenance"],
+    "Maritime & Ports": ["maritime", "port operations", "shipping port", "dockyard"],
+    "Waste Management": ["waste management", "landfill", "recycling facility", "garbage collection"],
+    "Corporate Office": ["corporate office", "office workers", "office environment"],
+}
+
+# Used by pick_industry() below ONLY when detect_explicit_industry()
+# found nothing — i.e. the topic never names an industry directly, but
+# often still contains a concrete clue (an object, role, or hazard) that
+# makes some industries a far more plausible random pick than others.
+# Broader/looser than the aliases above on purpose: these are meant to
+# catch incidental mentions ("watch for forklifts") without those
+# mentions counting as the user explicitly declaring an industry.
+_INDUSTRY_CONTEXT_HINTS: dict = {
+    "Warehouse & Logistics": ["forklift", "pallet", "loading dock", "conveyor", "inventory", "shipping crate"],
+    "Manufacturing": ["assembly", "machine operator", "production line", "cnc", "press machine"],
+    "Construction": ["scaffolding", "ladder", "excavator", "rebar", "hard hat", "crane", "trench"],
+    "Oil & Gas": ["pipeline", "drilling", "wellhead", "offshore platform", "flammable gas"],
+    "Mining": ["underground mine", "excavator", "blasting", "quarry", "ore"],
+    "Utilities & Electrical": ["voltage", "wiring", "power line", "circuit breaker", "transformer", "substation"],
+    "Agriculture": ["tractor", "livestock", "pesticide", "harvest", "irrigation", "crop"],
+    "Healthcare": ["patient", "needle", "surgical", "clinical", "nurse", "ppe gown"],
+    "Transportation & Fleet": ["truck driver", "delivery route", "cargo van", "commercial vehicle", "dashcam"],
+    "Food & Beverage Manufacturing": ["conveyor belt", "packaging line", "food safety", "sanitation"],
+    "Chemical & Petrochemical": ["solvent", "corrosive", "reactor vessel", "hazmat", "fume hood"],
+    "Aviation": ["runway", "aircraft", "ground crew", "jet fuel", "hangar"],
+    "Maritime & Ports": ["cargo ship", "shipping port", "crane operator", "shipping container", "vessel", "dockyard", "cargo dock"],
+    "Waste Management": ["garbage truck", "landfill", "recycling", "hazardous waste disposal"],
+    "Corporate Office": ["cubicle", "desk", "meeting room", "office chair", "computer monitor"],
+}
 
 # Negative-prompt fallbacks, used only when the Image Prompt Generation
 # Agent's JSON response comes back with an empty negative_prompt field.
@@ -176,23 +229,64 @@ def pick_daily_tip_focus() -> Tuple[str, str]:
     return random.choice(_DAILY_TIP_FOCUS_ROTATION)
 
 
-def pick_industry(avoid: Optional[str] = None) -> str:
-    """Randomly select exactly ONE industry from the single-source-of-
-    truth list (load_available_industries(), parsed from
-    image_prompt_system.txt's AVAILABLE INDUSTRIES section), excluding
-    `avoid` (typically the industry used for this same caller's previous
-    piece of content) so consecutive generations don't converge on the
-    same one. If `avoid` isn't in the list or leaves no other choices,
-    falls back to picking from the full list.
+def detect_explicit_industry(topic: str) -> Optional[str]:
+    """If `topic` names a specific industry — either the canonical name
+    itself (e.g. "Healthcare") or one of _INDUSTRY_NAME_ALIASES' short
+    aliases (e.g. "hospital") — returns that industry EXACTLY, to be used
+    as-is and never randomized or replaced. Returns None if no industry
+    is named, in which case the caller should fall back to
+    pick_industry() below.
+
+    Checked in load_available_industries() order (file order in
+    image_prompt_system.txt) so results are deterministic if a topic
+    happens to match more than one industry's alias.
+    """
+    if not topic:
+        return None
+    topic_lower = topic.lower()
+    for industry in load_available_industries():
+        candidates = [industry.lower()] + [a.lower() for a in _INDUSTRY_NAME_ALIASES.get(industry, [])]
+        for alias in candidates:
+            if re.search(r"\b" + re.escape(alias) + r"\b", topic_lower):
+                return industry
+    return None
+
+
+def pick_industry(topic: str = "", avoid: Optional[str] = None) -> str:
+    """Randomly select ONE industry from the single-source-of-truth list
+    (load_available_industries()), excluding `avoid` — called ONLY when
+    detect_explicit_industry() found nothing, i.e. the topic never names
+    an industry directly.
+
+    Still genuinely random, but no longer uniformly so: if `topic`
+    contains any of _INDUSTRY_CONTEXT_HINTS' looser contextual clues
+    (an object, role, or hazard associated with a specific industry —
+    without naming that industry outright), the random choice is
+    restricted to the matching industries instead of the full 15-item
+    list, so the result is topic-relevant rather than arbitrary. Only
+    when the topic gives zero such clues does this fall back to a fully
+    unrestricted random choice across every industry — still randomized
+    (never the same default every time), just with no basis to narrow it.
 
     Called once per request by ContentGenerationEngine.generate() when
-    the caller supplies no explicit `industry` of its own. Whatever this
-    returns becomes THE industry for that entire request — passed
-    identically to both the Content Generation Agent and the Image
-    Prompt Agent, never re-picked independently by either.
+    the caller supplies no explicit `industry` AND detect_explicit_industry()
+    found none in the topic. Whatever this returns becomes THE industry
+    for that entire request — passed identically to both the Content
+    Generation Agent and the Image Prompt Agent, never re-picked
+    independently by either.
     """
     industries = load_available_industries()
-    choices = [i for i in industries if i != avoid] or list(industries)
+    relevant = industries
+    if topic:
+        topic_lower = topic.lower()
+        hinted = [
+            industry
+            for industry in industries
+            if any(re.search(r"\b" + re.escape(hint) + r"\b", topic_lower) for hint in _INDUSTRY_CONTEXT_HINTS.get(industry, []))
+        ]
+        if hinted:
+            relevant = tuple(hinted)
+    choices = [i for i in relevant if i != avoid] or [i for i in industries if i != avoid] or list(industries)
     return random.choice(choices)
 
 
@@ -215,7 +309,21 @@ You are doing BOTH roles above in a single response, to save a network
 round trip: first the Content Generation Agent's job (exactly per its
 instructions above), then — using that content as your single source of
 truth, exactly as the Image Prompt Generation Agent's instructions
-above require — its job.
+above require — its job, INCLUDING that agent's requirement to extract
+distinct meaningful visual concepts and produce THREE separately
+content-anchored prompts, not one. The reminder in that agent's
+instructions about avoiding industry-generic objects (a glove, a boot, a
+wrench) that would make just as much sense with the content deleted
+applies exactly as written — do not relax it just because this is a
+single combined call.
+
+IMPORTANT: this combined path saves a network round trip but skips the
+separate second-pass validator step the two-call pipeline normally runs
+before Freepik. That validator exists specifically to catch prompts that
+only look grounded. Since it won't run here, hold yourself to that same
+bar on the first attempt — re-read your own content_text before writing
+each image entry and confirm you can point to the exact clause it
+represents, exactly as that agent's instructions describe.
 
 Do not show your work for either step. Return ONLY one JSON object and
 nothing else: no markdown fences, no commentary before or after it.
@@ -223,13 +331,21 @@ nothing else: no markdown fences, no commentary before or after it.
 {
   "content_text": "<the learner-facing text the Content Generation Agent
       would have produced, following ALL of its rules exactly>",
-  "image_prompt": "<the Image Prompt Generation Agent's image_prompt,
-      derived only from content_text above>",
+  "image_prompts": [
+    {"content_anchor": "<exact phrase/clause from content_text>", "visual_concept": "<one-sentence bridge from that anchor to the image>", "prompt": "<the image-generation prompt text>"},
+    {"content_anchor": "...", "visual_concept": "...", "prompt": "..."},
+    {"content_anchor": "...", "visual_concept": "...", "prompt": "..."}
+  ],
   "negative_prompt": "...",
   "alt_text": "...",
   "tags": ["..."],
   "summary": "..."
 }
+
+image_prompts must be EXACTLY THREE entries, each built around a
+DIFFERENT extracted concept (see the Image Prompt Generation Agent's
+instructions above for how to extract them and what to do if that list
+comes up thin) — never three reworded variants of the same idea.
 """
 
 
@@ -257,6 +373,7 @@ def build_combined_user_prompt(
     topic: str,
     context_chunks: List[dict],
     mode: str,
+    industry: Optional[str] = None,
     monthly_topic_content: Optional[str] = None,
     common_data: Optional[str] = None,
     web_results: Optional[str] = None,
@@ -266,11 +383,21 @@ def build_combined_user_prompt(
     """User-turn prompt for the merged call — the union of what
     build_content_generation_prompt() and build_image_prompt_request()
     would each have sent, minus Generated Content/Output Mode-as-afterthought
-    (the model produces the content itself this call, then uses it)."""
+    (the model produces the content itself this call, then uses it).
+
+    industry: same resolved-once value ContentGenerationEngine.generate()
+      passes everywhere else — previously this function silently dropped
+      it (a real gap: combined-mode content generation never saw the
+      authoritative industry at all, unlike the separate pipeline's
+      build_content_generation_prompt() call). Threaded through here so
+      combined mode's content_text and image_prompts share the same
+      industry grounding the separate pipeline already guaranteed.
+    """
     user_prompt = build_content_generation_prompt(
         content_type=content_type,
         topic=topic,
         context_chunks=context_chunks,
+        industry=industry,
         monthly_topic_content=monthly_topic_content,
         common_data=common_data,
         web_results=web_results,

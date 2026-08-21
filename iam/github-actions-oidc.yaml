@@ -1,0 +1,239 @@
+# One-time bootstrap for GitHub Actions CI/CD: a GitHub OIDC identity
+# provider (if you don't already have one in this account) plus a
+# least-privilege IAM role GitHub Actions assumes to run `sam build` /
+# `sam deploy` against the AI Content Generation stack.
+#
+# Deploy this ONCE, separately from template.yaml (the application
+# stack), with plain AWS credentials (your own, e.g. via `aws configure`
+# or the console) — not from GitHub Actions itself, since the whole
+# point is for the CI role to exist *before* anything in CI tries to use
+# it (classic bootstrap ordering problem: you can't grant a role
+# permission to create itself).
+#
+# Deploy:
+#   aws cloudformation deploy \
+#     --template-file iam/github-actions-oidc.yaml \
+#     --stack-name content-generation-ci-bootstrap \
+#     --capabilities CAPABILITY_NAMED_IAM \
+#     --parameter-overrides \
+#       GitHubOrg=<your-github-org-or-username> \
+#       GitHubRepo=<your-repo-name> \
+#       AppStackName=<the --stack-name you use for template.yaml>
+#
+# Then copy this stack's RoleArn output into your GitHub repo as the
+# AWS_DEPLOY_ROLE_ARN secret (or repo/environment variable — it's not
+# secret, just an ARN) — see .github/workflows/deploy.yml.
+AWSTemplateFormatVersion: "2010-09-09"
+Description: One-time GitHub Actions OIDC provider + least-privilege SAM deploy role for the AI Content Generation stack.
+
+Parameters:
+  GitHubOrg:
+    Type: String
+    Description: Your GitHub org or username, e.g. "acme-corp".
+  GitHubRepo:
+    Type: String
+    Description: Repo name only (no org prefix), e.g. "ai-content-generation".
+  AppStackName:
+    Type: String
+    Default: ai-content-generation-service
+    Description: >
+      The --stack-name you deploy template.yaml under. Used to scope this
+      role's CloudFormation/Lambda/etc. permissions to only that stack's
+      resources, not your whole account.
+  CreateOidcProvider:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: >
+      Set to "false" if this AWS account already has a GitHub OIDC
+      provider (token.actions.githubusercontent.com) registered — an
+      account can only have one, and CloudFormation will fail with
+      "already exists" if you try to create a second one.
+
+Conditions:
+  ShouldCreateOidcProvider: !Equals [!Ref CreateOidcProvider, "true"]
+
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: ShouldCreateOidcProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      ThumbprintList:
+        # GitHub's OIDC thumbprint — AWS also validates via ClientIdList
+        # (sts.amazonaws.com) regardless, so this is effectively a
+        # required-but-not-load-bearing field for GitHub's provider.
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+
+  GitHubActionsDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AppStackName}-github-actions-deploy"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com"
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                "token.actions.githubusercontent.com:aud": sts.amazonaws.com
+              StringLike:
+                # Restricts which repo/branch can assume this role — adjust
+                # the branch glob (":ref:refs/heads/main") if you deploy
+                # from a different branch or also want to allow tags.
+                "token.actions.githubusercontent.com:sub": !Sub "repo:${GitHubOrg}/${GitHubRepo}:ref:refs/heads/main"
+      Policies:
+        - PolicyName: SamDeployLeastPrivilege
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # CloudFormation: manage only this one app stack (+ SAM's
+              # managed S3 staging bucket it creates via --resolve-s3).
+              - Sid: CloudFormationStack
+                Effect: Allow
+                Action:
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackEvents
+                  - cloudformation:DescribeStackResource
+                  - cloudformation:DescribeStackResources
+                  - cloudformation:GetTemplateSummary
+                  - cloudformation:ListStackResources
+                  - cloudformation:CreateStack
+                  - cloudformation:UpdateStack
+                  - cloudformation:DeleteChangeSet
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AppStackName}/*"
+              - Sid: SamCliManagedResources
+                Effect: Allow
+                Action:
+                  - cloudformation:GetTemplate
+                Resource: "*"
+              # SAM's own staging bucket (created once via `sam deploy
+              # --resolve-s3` / `sam deploy --guided`) for uploading the
+              # build artifact before CloudFormation picks it up.
+              - Sid: SamStagingBucket
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:GetBucketLocation
+                  - s3:CreateBucket
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:s3:::aws-sam-cli-managed-*"
+                  - !Sub "arn:${AWS::Partition}:s3:::aws-sam-cli-managed-*/*"
+              # Lambda: function/version/alias/permission management for
+              # exactly this function, wherever CloudFormation names it.
+              - Sid: LambdaVersioningAndAlias
+                Effect: Allow
+                Action:
+                  - lambda:CreateFunction
+                  - lambda:UpdateFunctionCode
+                  - lambda:UpdateFunctionConfiguration
+                  - lambda:GetFunction
+                  - lambda:GetFunctionConfiguration
+                  - lambda:PublishVersion
+                  - lambda:CreateAlias
+                  - lambda:UpdateAlias
+                  - lambda:GetAlias
+                  - lambda:ListVersionsByFunction
+                  - lambda:ListAliases
+                  - lambda:AddPermission
+                  - lambda:RemovePermission
+                  - lambda:GetPolicy
+                  - lambda:TagResource
+                  - lambda:ListTags
+                Resource: "*"
+              # API Gateway (HttpApi) — provisioned/updated by the same
+              # stack; scope tightened to the account/region rather than
+              # a specific API id, since the API id doesn't exist yet on
+              # first deploy.
+              - Sid: HttpApiManagement
+                Effect: Allow
+                Action:
+                  - apigateway:GET
+                  - apigateway:POST
+                  - apigateway:PUT
+                  - apigateway:PATCH
+                  - apigateway:DELETE
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}::/apis/*"
+                  - !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}::/apis"
+              # DynamoDB / S3 (generated images) / IAM role for the
+              # function's own execution role — scoped by naming
+              # convention (CloudFormation-generated names embed the
+              # stack name).
+              - Sid: SupportingResources
+                Effect: Allow
+                Action:
+                  - dynamodb:CreateTable
+                  - dynamodb:DescribeTable
+                  - dynamodb:UpdateTable
+                  - dynamodb:UpdateTimeToLive
+                  - dynamodb:TagResource
+                  - s3:CreateBucket
+                  - s3:PutBucketTagging
+                  - s3:PutLifecycleConfiguration
+                  - s3:GetLifecycleConfiguration
+                Resource: "*"
+              - Sid: FunctionExecutionRoleManagement
+                Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:GetRole
+                  - iam:DeleteRole
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:GetRolePolicy
+                  - iam:PassRole
+                  - iam:TagRole
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${AppStackName}-*"
+              # CodeDeploy — created/managed by SAM's DeploymentPreference
+              # for the canary/linear rollout + auto-rollback (see
+              # template.yaml). Scoped to applications/deployment groups
+              # whose names SAM derives from the app stack.
+              - Sid: CodeDeployForSafeLambdaDeployments
+                Effect: Allow
+                Action:
+                  - codedeploy:CreateApplication
+                  - codedeploy:CreateDeploymentGroup
+                  - codedeploy:CreateDeployment
+                  - codedeploy:GetApplication
+                  - codedeploy:GetDeploymentGroup
+                  - codedeploy:GetDeployment
+                  - codedeploy:GetDeploymentConfig
+                  - codedeploy:RegisterApplicationRevision
+                  - codedeploy:ContinueDeployment
+                  - codedeploy:StopDeployment
+                  - codedeploy:UpdateDeploymentGroup
+                Resource: "*"
+              - Sid: CodeDeployServiceRole
+                Effect: Allow
+                Action:
+                  - iam:CreateServiceLinkedRole
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-service-role/codedeploy.amazonaws.com/*"
+              # CloudWatch Alarm the DeploymentPreference watches (see
+              # ProdAliasErrorAlarm in template.yaml).
+              - Sid: CloudWatchAlarmForDeploymentPreference
+                Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricAlarm
+                  - cloudwatch:DeleteAlarms
+                  - cloudwatch:DescribeAlarms
+                Resource: "*"
+
+Outputs:
+  RoleArn:
+    Description: >
+      Copy this into the AWS_DEPLOY_ROLE_ARN GitHub Actions secret/variable.
+    Value: !GetAtt GitHubActionsDeployRole.Arn

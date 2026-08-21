@@ -58,7 +58,17 @@ E. GENERIC IMAGE TEST (the most important check — apply carefully)
    itself specifically names that exact object/action as the thing being
    taught (e.g. the content is literally about inspecting gloves for
    wear — then a glove is correct; but a glove standing in for "handling
-   heavy equipment safely" is not).
+   heavy equipment safely" is not). This applies equally to POSES, not
+   just objects: "a worker looking up," "a worker looking around a
+   corner," "a worker pausing thoughtfully" are just as industry-generic
+   as a stock prop when the underlying concept is a mental/procedural
+   habit (staying focused, anticipating errors, self-awareness) — these
+   generic poses FAIL this check too, because the same pose would fit
+   almost any lesson. For this kind of content, the entry only passes if
+   it shows a concrete SITUATION: the specific hazard/risk actually
+   visible in frame, plus the subject's specific corrective action or
+   posture in response to it — not the pose alone with the hazard
+   omitted or merely implied.
 
 F. CONTENT TYPE TEST
    Would this exact prompt have been written if you only knew the
@@ -73,10 +83,43 @@ G. DISTINCTNESS
    not the same idea reworded, and not distinguished only by camera
    angle/framing/lighting? If NO, FAIL.
 
+H. HAZARD + BEHAVIOR PAIRING (safety content only — skip for entries with
+   no hazard/risk in their visual story)
+   If this entry's underlying concept is a safety habit, technique, or
+   best practice that guards against a specific hazard or mistake, is
+   that hazard actually visible in the same frame — not off-screen, not
+   merely implied, not left to the alt_text? A correct-behavior-only
+   depiction with the hazard it prevents nowhere in the image FAILS this
+   check, even if the behavior itself is well-rendered and specific.
+
+I. CROSS-ENTRY CONSISTENCY
+   Compare this entry against the other two: do they describe the same
+   subject (matching physical description, not a differently-described
+   person each time), the same environment (same specific workplace
+   setting and layout, not a different one per entry), and the same
+   rendering style/mood — unless the three genuinely different concepts
+   being visualized require different settings? If the three read as
+   unrelated images that merely share a topic rather than one consistent
+   visual story, FAIL and correct the mismatched entry to match the
+   other two (or, if this entry is the odd one out, adjust it to align
+   rather than assuming the other two are wrong).
+
+J. TEXT NECESSITY AND ACCURACY
+   Does this entry's prompt ask for any word, phrase, title, caption, or
+   label? If so, it must be either (a) a bare single-digit numeral in
+   infographic mode for genuine step sequence, or (b) a specific, exactly
+   quoted short string the Generated Content itself requires (per the
+   REQUIRED TEXT EXCEPTION in the drafting instructions) — with an
+   explicit "spelled exactly as written" instruction, and nothing beyond
+   that one short word/phrase. Any other in-image text — decorative,
+   incidental, vaguely referenced ("a warning sign" with no exact wording
+   given), or a full sentence — FAILS this check; remove it from the
+   prompt rather than leaving it in.
+
 =====================================================
 WHAT TO DO WITH EACH ENTRY
 =====================================================
-- PASS: the entry passes all seven checks as originally written. Return
+- PASS: the entry passes all ten checks as originally written. Return
   it completely unchanged (content_anchor, visual_concept, and prompt
   all identical to the input) with "passed": true.
 - FAIL (fixable): the entry fails one or more checks, but you can

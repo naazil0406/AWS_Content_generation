@@ -31,22 +31,79 @@ Parameters:
     Type: String
     NoEcho: true
     Default: ""
-  UploadBucketName:
+  # These five were previously NOT wired into the Lambda's environment at
+  # all — local .env could set them, but the deployed Lambda silently
+  # always used config.py's Python defaults regardless of local config,
+  # a real local/deployed divergence risk. Defaults here match config.py
+  # exactly, so leaving all of these unset still deploys identically to
+  # before; they're only useful if you want to override one without a
+  # code change.
+  FreepikModel:
     Type: String
+    Default: ""
     Description: >
-      S3 bucket containing the campaigns/ folder that feeds the Campaigns
-      Data Source. Can be the same bucket the existing data source already
-      uses (only the UploadPrefix folder is written to) or a separate one.
-  UploadPrefix:
+      Empty = Freepik's Mystic endpoint (default, slower ~90-130s). Set to
+      one of flux-dev / hyperflux / seedream-v4 / seedream-v4-5 /
+      seedream-v5-lite to use that model's own faster endpoint instead —
+      see app/services/image_generation_service.py's _FLUX_ENDPOINTS.
+  FreepikResolution:
     Type: String
-    Default: campaigns/
-    Description: S3 prefix inside UploadBucketName that uploaded documents are written to.
-  UploadDataSourceId:
+    Default: "2k"
+    Description: Mystic-endpoint-only resolution setting (ignored by the Flux/Seedream endpoints above).
+  FreepikFilterNsfw:
     Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: Mystic-endpoint-only NSFW filter toggle (ignored by the Flux/Seedream endpoints above).
+  ImageWidth:
+    Type: Number
+    Default: 1024
+  ImageHeight:
+    Type: Number
+    Default: 1024
+  # Fix for the 401/422 Freepik errors: observed in production, near-
+  # simultaneous parallel image submissions from the same API key/plan
+  # collided at Freepik's gateway, surfacing as DIFFERENT error codes
+  # (401 on one request, 422 on another) for otherwise-identical
+  # requests at the same millisecond — the signature of a race, not a
+  # deterministic config problem. See
+  # app/services/image_generation_service.py's _submit_with_retry() and
+  # _submit_semaphore for the fix. Defaults below reproduce exactly what
+  # ships even if you never touch these parameters.
+  FreepikMaxConcurrentSubmissions:
+    Type: Number
+    Default: 1
+    Description: Caps simultaneous Freepik submission POSTs per request's 3 images to avoid the gateway collision above. Only the fast submission step is capped — polling/download stay fully parallel.
+  FreepikSubmitMaxRetries:
+    Type: Number
+    Default: 2
+    Description: Extra attempts (beyond the first) for a failed Freepik submission — recovers from the collision above if it happens despite the concurrency cap.
+  FreepikSubmitRetryBackoffSeconds:
+    Type: Number
+    Default: 0.75
+    Description: Linear backoff between retry attempts (0.75s, 1.5s, ...).
+  DeploymentPreferenceType:
+    Type: String
+    Default: Canary10Percent5Minutes
+    AllowedValues:
+      - AllAtOnce
+      - Canary10Percent5Minutes
+      - Canary10Percent10Minutes
+      - Canary10Percent15Minutes
+      - Canary10Percent30Minutes
+      - Linear10PercentEvery1Minute
+      - Linear10PercentEvery2Minutes
+      - Linear10PercentEvery3Minutes
+      - Linear10PercentEvery10Minutes
     Description: >
-      Data Source ID of the Campaigns Data Source (Bedrock console -> your
-      Knowledge Base -> Data sources -> Campaigns). NOT the existing data
-      source's ID — ingestion jobs are scoped to this ID only.
+      How the "prod" alias shifts traffic to each new Lambda version.
+      AllAtOnce = simple immediate cutover (Section A: version + alias,
+      no traffic shifting). Canary/Linear = SAM/CodeDeploy shifts a small
+      percentage of traffic first, watches ProdAliasErrorAlarm below, and
+      automatically shifts prod back to the previous version if it fires
+      before completing the rollout (Section B). Default recommended:
+      Canary10Percent5Minutes — see README's "Lambda Versioning &
+      Rollback" section for the full A-vs-B rationale.
 
 Resources:
   ContentGenerationApi:
@@ -57,11 +114,10 @@ Resources:
         AllowMethods: ["*"]
         AllowHeaders: ["*"]
 
+  # Name for the S3 bucket that stores generated images. Must be
+  # globally unique across all AWS accounts.
   GeneratedImagesBucket:
     Type: AWS::S3::Bucket
-    Description: >
-      Name for the S3 bucket that stores generated images. Must be
-      globally unique across all AWS accounts.
     Properties:
       LifecycleConfiguration:
         Rules:
@@ -69,22 +125,69 @@ Resources:
             Status: Enabled
             ExpirationInDays: 1   # presigned URLs only last S3_PRESIGNED_URL_EXPIRY seconds anyway
 
+  # Watched by DeploymentPreference below during a canary/linear rollout.
+  # If invocations of the "prod" alias error out while a canary/linear
+  # deployment is shifting traffic to a new version, CodeDeploy
+  # automatically shifts the "prod" alias back to the previous version —
+  # no manual action, no rebuild. Scoped to the alias (Resource:
+  # <function>:prod), not the whole function, so it only reflects
+  # traffic actually going through "prod".
+  ProdAliasErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: >
+        Lambda Errors > 0 for the content_generation function's "prod"
+        alias — triggers CodeDeploy's automatic rollback of the "prod"
+        alias while a canary/linear deployment is in progress.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref ContentGenerationFunction
+        - Name: Resource
+          Value: !Sub "${ContentGenerationFunction}:prod"
+
   ContentGenerationFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: content_generation
       Handler: app.main.handler
       CodeUri: .
+      # Every `sam deploy` that changes code or configuration now
+      # publishes a new IMMUTABLE Lambda version (1, 2, 3, ...) and keeps
+      # the "prod" alias — not $LATEST — as the stable pointer production
+      # traffic actually uses. SAM automatically repoints the existing
+      # ApiEvent/RootEvent integrations below at
+      # "content_generation:prod" instead of the bare function/$LATEST,
+      # and manages the matching Lambda resource-based invoke permission
+      # for API Gateway — no manual Api/integration changes needed, and
+      # the existing API Gateway URL/routes/CORS are unaffected.
+      AutoPublishAlias: prod
+      DeploymentPreference:
+        Type: !Ref DeploymentPreferenceType
+        Alarms:
+          - !Ref ProdAliasErrorAlarm
       Environment:
         Variables:
           KNOWLEDGE_BASE_ID: !Ref KnowledgeBaseId
           KNOWLEDGE_BASE_REGION: !Ref KnowledgeBaseRegion
           IMAGE_PROVIDER: !Ref ImageProvider
           FREEPIK_API_KEY: !Ref FreepikApiKey
+          FREEPIK_MODEL: !Ref FreepikModel
+          FREEPIK_RESOLUTION: !Ref FreepikResolution
+          FREEPIK_FILTER_NSFW: !Ref FreepikFilterNsfw
+          IMAGE_WIDTH: !Ref ImageWidth
+          IMAGE_HEIGHT: !Ref ImageHeight
+          FREEPIK_MAX_CONCURRENT_SUBMISSIONS: !Ref FreepikMaxConcurrentSubmissions
+          FREEPIK_SUBMIT_MAX_RETRIES: !Ref FreepikSubmitMaxRetries
+          FREEPIK_SUBMIT_RETRY_BACKOFF_SECONDS: !Ref FreepikSubmitRetryBackoffSeconds
           GENERATED_IMAGES_BUCKET: !Ref GeneratedImagesBucket
-          UPLOAD_BUCKET_NAME: !Ref UploadBucketName
-          UPLOAD_PREFIX: !Ref UploadPrefix
-          UPLOAD_DATA_SOURCE_ID: !Ref UploadDataSourceId
       Policies:
         - Statement:
             - Effect: Allow
@@ -101,19 +204,6 @@ Resources:
                 - s3:PutObject
                 - s3:GetObject
               Resource: !Sub "${GeneratedImagesBucket.Arn}/*"
-            - Effect: Allow
-              Action:
-                - s3:PutObject
-              Resource: !Sub "arn:aws:s3:::${UploadBucketName}/${UploadPrefix}*"
-            - Effect: Allow
-              Action:
-                - bedrock:StartIngestionJob
-                - bedrock:GetIngestionJob
-              # Same Knowledge Base ARN as the bedrock:Retrieve statement above -
-              # this only grants ingestion control, and start_ingestion_job() is
-              # always called with UploadDataSourceId, so the existing data
-              # source is never targeted even though the ARN is KB-level.
-              Resource: !Sub "arn:aws:bedrock:${KnowledgeBaseRegion}:${AWS::AccountId}:knowledge-base/${KnowledgeBaseId}"
       Events:
         ApiEvent:
           Type: HttpApi
@@ -139,6 +229,12 @@ Outputs:
   FunctionName:
     Description: The Lambda function's actual name in AWS
     Value: !Ref ContentGenerationFunction
+  ProdAliasArn:
+    Description: >
+      The stable "prod" alias ARN — this, not the bare FunctionArn above,
+      is what API Gateway actually invokes. Use with `aws lambda
+      update-alias` for manual rollback (see README's Rollback section).
+    Value: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${ContentGenerationFunction}:prod"
   GeneratedImagesBucketName:
     Description: S3 bucket storing generated images
     Value: !Ref GeneratedImagesBucket

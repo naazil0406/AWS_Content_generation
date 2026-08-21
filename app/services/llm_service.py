@@ -144,6 +144,7 @@ class BaseLLMService:
         topic: str,
         context_chunks: List[dict],
         mode: str,
+        industry: Optional[str] = None,
         monthly_topic_content: Optional[str] = None,
         common_data: Optional[str] = None,
         web_results: Optional[str] = None,
@@ -154,8 +155,23 @@ class BaseLLMService:
         call: one LLM round trip instead of two, since the second agent's
         only input beyond static instructions is the first agent's output
         — there's no reason that has to be two separate network calls.
-        Returns a dict with keys: content_text, image_prompt,
-        negative_prompt, alt_text, tags, summary.
+
+        Returns the SAME shape as generate_image_prompt_package() (plus
+        content_text): image_prompts (exactly 3, content-anchored),
+        prompt_entries (the same 3 with content_anchor/visual_concept for
+        traceability), negative_prompt, alt_text, tags, summary. This
+        keeps callers (ContentGenerationEngine.generate()) able to treat
+        this path and the separate two-call path identically — see
+        _COMBINED_OUTPUT_FORMAT_OVERRIDE in prompt_builder.py for the
+        contract this parses.
+
+        Trade-off, stated plainly: this path does NOT run the dedicated
+        second-pass validator (prompts/image_prompt_validator_system.txt)
+        the separate pipeline runs before Freepik — doing so would require
+        a second call, defeating the entire point of this "combined"
+        path. The combined system prompt instructs the model to hold
+        itself to that same bar on the first attempt, but there is no
+        independent check here the way there is in the separate pipeline.
         """
         from app.services.prompt_builder import build_combined_user_prompt
 
@@ -164,6 +180,7 @@ class BaseLLMService:
             topic=topic,
             context_chunks=context_chunks,
             mode=mode,
+            industry=industry,
             monthly_topic_content=monthly_topic_content,
             common_data=common_data,
             web_results=web_results,
@@ -189,13 +206,14 @@ class BaseLLMService:
                 f"The model returned no content_text for '{content_type}' on topic '{topic}'."
             )
 
-        image_prompt = (data.get("image_prompt") or "").strip()
-        if not image_prompt:
-            raise RuntimeError("Combined generation returned an empty image_prompt.")
+        prompt_entries = _parse_prompt_entries(data)
+        if not prompt_entries:
+            raise RuntimeError("Combined generation returned no non-empty image_prompts.")
 
         return {
             "content_text": content_text,
-            "image_prompt": image_prompt,
+            "image_prompts": [e["prompt"] for e in prompt_entries],
+            "prompt_entries": prompt_entries,
             "negative_prompt": (data.get("negative_prompt") or "").strip(),
             "alt_text": (data.get("alt_text") or "").strip(),
             "tags": data.get("tags") or [],

@@ -202,7 +202,7 @@ h1 {
     <div class="header">
       <p class="eyebrow">AI Content Generation</p>
       <h1>Generate learning content + images</h1>
-      <p class="sub">Content Type + Topic + Industry in — choose Generate for content only, or Generate + Image for content plus 3 grounded image variations.</p>
+      <p class="sub">Content Type + Topic in — choose Generate for content only, or Generate + Image for content plus 3 grounded image variations.</p>
     </div>
 
     <div class="gen-trigger-row">
@@ -222,10 +222,6 @@ h1 {
       <div class="field">
         <label for="topic">Topic / Prompt</label>
         <textarea id="topic" placeholder="Describe what you want generated, e.g. 'Heat Safety Awareness for warehouse workers during summer months'"></textarea>
-      </div>
-      <div class="field">
-        <label for="industry">Industry <span style="font-weight:400;color:var(--ink-text-soft);">(optional — leave blank to randomly select one)</span></label>
-        <input type="text" id="industry" placeholder="e.g. Manufacturing, Healthcare, Construction — or leave blank for a random industry" />
       </div>
 
       <div class="action-row">
@@ -381,7 +377,7 @@ function makeSseParser(onEvent) {
   };
 }
 
-async function generateContentStreaming(contentType, topic, industry, generateImages, statusEl, timerValueEl) {
+async function generateContentStreaming(contentType, topic, generateImages, statusEl, timerValueEl) {
   const startedAt = performance.now();
   let timerHandle = null;
   const updateTimer = () => {
@@ -416,7 +412,7 @@ async function generateContentStreaming(contentType, topic, industry, generateIm
       body: JSON.stringify({
         prompt: topic,
         content_type: contentType,
-        industry: industry || null,
+        industry: null,
         generate_images: generateImages,
       }),
     });
@@ -513,7 +509,6 @@ async function generateContentStreaming(contentType, topic, industry, generateIm
 // needing to reopen the panel and retype anything.
 let lastContentType = null;
 let lastTopic = null;
-let lastIndustry = null;
 let lastGenerateImages = true;
 
 // Shared by the initial "Generate"/"Generate + Image" buttons and the
@@ -521,7 +516,7 @@ let lastGenerateImages = true;
 // early-failure retry behavior either way. All three buttons are
 // disabled while any run is in flight so a second click can't overlap
 // the first.
-async function runGeneration(contentType, topic, industry, generateImages) {
+async function runGeneration(contentType, topic, generateImages) {
   const statusEl = document.getElementById("generateStatus");
   const generateBtn = document.getElementById("generateBtn");
   const generateImageBtn = document.getElementById("generateImageBtn");
@@ -536,12 +531,11 @@ async function runGeneration(contentType, topic, industry, generateImages) {
   while (true) {
     try {
       await generateContentStreaming(
-        contentType, topic, industry, generateImages,
+        contentType, topic, generateImages,
         statusEl, document.getElementById("timerValue"),
       );
       lastContentType = contentType;
       lastTopic = topic;
-      lastIndustry = industry;
       lastGenerateImages = generateImages;
       break;
     } catch (err) {
@@ -564,29 +558,26 @@ async function runGeneration(contentType, topic, industry, generateImages) {
 async function generateContent(generateImages) {
   const contentType = document.getElementById("contentType").value;
   const topic = document.getElementById("topic").value.trim();
-  const industry = document.getElementById("industry").value.trim();
   const statusEl = document.getElementById("generateStatus");
 
   if (!contentType) return setStatus(statusEl, "Choose a content type first.", true);
   if (!topic) return setStatus(statusEl, "Enter a topic first.", true);
 
   document.getElementById("resultCard").hidden = true;
-  await runGeneration(contentType, topic, industry, generateImages);
+  await runGeneration(contentType, topic, generateImages);
 }
 
 // Re-runs the last generation from scratch with the same Content Type,
-// Topic, Industry, and Generate/Generate + Image action, producing new
-// content text and (if the last run generated images) a new set of 3
-// images — each generation is unique by design (see the content/image
-// prompts), so this naturally yields a fresh variation rather than
-// repeating.
+// Topic, and Generate/Generate + Image action, producing new content
+// text and (if the last run generated images) a new set of 3 images —
+// each generation is unique by design (see the content/image prompts),
+// so this naturally yields a fresh variation rather than repeating.
 async function regenerateContent() {
   if (!lastContentType || !lastTopic) return;
   document.getElementById("contentType").value = lastContentType;
   document.getElementById("topic").value = lastTopic;
-  document.getElementById("industry").value = lastIndustry || "";
   openGenPanel();
-  await runGeneration(lastContentType, lastTopic, lastIndustry, lastGenerateImages);
+  await runGeneration(lastContentType, lastTopic, lastGenerateImages);
 }
 
 document.getElementById("openGenBtn").addEventListener("click", openGenPanel);

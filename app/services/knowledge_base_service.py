@@ -82,7 +82,22 @@ class KnowledgeBaseService:
             # Lambda execution role (including its session token) when
             # deployed, or ~/.aws/credentials / exported AWS_* env vars
             # locally.
-            self._client = boto3.client("bedrock-agent-runtime", region_name=self.region)
+            #
+            # max_attempts=1 deliberately disables botocore's OWN
+            # automatic retries for this client: retrieve() below already
+            # implements its own Aurora-aware manual retry/backoff loop,
+            # and letting botocore ALSO retry underneath it would
+            # multiply attempts (and worst-case latency) rather than
+            # bound it. connect/read timeouts keep a single attempt from
+            # hanging indefinitely.
+            from botocore.config import Config
+
+            client_config = Config(
+                connect_timeout=settings.KNOWLEDGE_BASE_CONNECT_TIMEOUT_SECONDS,
+                read_timeout=settings.KNOWLEDGE_BASE_READ_TIMEOUT_SECONDS,
+                retries={"max_attempts": 1},
+            )
+            self._client = boto3.client("bedrock-agent-runtime", region_name=self.region, config=client_config)
         return self._client
 
     def retrieve(self, query: str, top_k: Optional[int] = None) -> List[dict]:

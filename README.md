@@ -73,8 +73,10 @@ prompts/
   image_prompt_system.txt              Image Prompt Generation Agent (drafting) system prompt
   image_prompt_validator_system.txt    Image Prompt Validator (second-pass QA) system prompt
 requirements.txt
-template.yaml                      AWS SAM deployment template
+template.yaml                      AWS SAM deployment template (includes Lambda versioning/alias/rollback config — see "Lambda Versioning & Rollback")
 .env.example
+.github/workflows/deploy.yml       GitHub Actions CI/CD — build + deploy on push to main
+iam/github-actions-oidc.yaml       One-time bootstrap: GitHub OIDC provider + least-privilege deploy role
 ```
 
 ## API
@@ -482,6 +484,279 @@ controls how many variations are rendered (default 3, per spec).
       the 60s timeout) — Nova Canvas/Bedrock calls are billed per image;
       Pollinations is free but rate-limited; size `IMAGE_VARIATIONS_COUNT`
       and timeout accordingly
+
+## Lambda Versioning & Rollback
+
+Every deploy now publishes an **immutable Lambda version**, and a
+**`prod` alias** — not `$LATEST` — is what API Gateway actually invokes.
+This is entirely infrastructure-level (`template.yaml`); no application
+code branches on which version is running, and none of the existing
+Generate / Generate + Image functionality changed.
+
+### How it works
+
+```
+                 API Gateway (unchanged: same URL, routes, CORS)
+                        │
+                        ▼
+           content_generation:prod   <- the alias, never $LATEST
+                        │
+              ┌─────────┴─────────┐
+          Version 3            Version 4
+        (old, still           (new deploy)
+         invocable for
+         rollback)
+```
+
+- **`AutoPublishAlias: prod`** on `ContentGenerationFunction`: SAM
+  publishes a new numbered version (1, 2, 3, ...) on any deploy that
+  changes the function's code or configuration, and automatically
+  repoints the *existing* `ApiEvent`/`RootEvent` HTTP API integrations
+  at `content_generation:prod` instead of the bare function/`$LATEST` —
+  no manual API Gateway change required, your invoke URL is unchanged.
+- **Version numbers are entirely AWS-assigned** — sequential integers
+  per function, starting at 1, incremented by Lambda itself on each
+  `PublishVersion` call SAM issues during deploy. There is no
+  application-level version counter to build or maintain, and none
+  should be added.
+- **`$LATEST`** still exists (Lambda always has it) but nothing in this
+  stack invokes it directly anymore — it's just the mutable "current
+  code" pointer SAM publishes numbered versions *from*. Production never
+  points at it because `$LATEST` can change without warning (e.g. a
+  future teammate's `sam deploy` mid-request) — a published version's
+  code+config is frozen forever, which is what actually makes rollback
+  meaningful ("go back to Version 3" only works if Version 3 can never
+  have silently changed).
+- **`DeploymentPreference`** (parameterized as `DeploymentPreferenceType`,
+  default `Canary10Percent5Minutes`): wraps the alias update in a
+  CodeDeploy-managed rollout that shifts a small percentage of traffic
+  to the new version first, watches `ProdAliasErrorAlarm` (Lambda Errors
+  on the `prod` alias) for the window, then either finishes shifting to
+  100% or **automatically reverts the alias to the previous version** if
+  the alarm fires — no manual action, no rebuild.
+
+### A. Simple version + alias rollback vs. B. Automated canary + auto-rollback
+
+Both are available from the **same** `DeploymentPreferenceType`
+parameter — no separate templates or resources to maintain:
+
+| | **A: `AllAtOnce`** | **B: `Canary10Percent5Minutes` (default)** |
+|---|---|---|
+| Traffic cutover | Immediate, 100% | 10% for 5 min, then 100% |
+| Auto-rollback on errors | No — you decide and roll back manually | Yes — CodeDeploy does it for you |
+| Extra AWS resources | None beyond the alias | +1 CloudWatch Alarm (already added) |
+| Blast radius of a bad deploy | 100% of traffic until you notice and roll back | ~10% of traffic, for up to 5 minutes |
+
+**Recommendation: keep the default, `Canary10Percent5Minutes`.** This is
+a real production service handling multiple simultaneous users, the
+added complexity is genuinely small (SAM/CodeDeploy manage it
+declaratively — nothing hand-built), and it meaningfully caps how much
+traffic a broken deploy can affect before anyone has to react. If you
+ever want pure A (immediate cutover, no traffic shifting, no alarm
+dependency), override the parameter — no template edits needed:
+```
+sam deploy --parameter-overrides DeploymentPreferenceType=AllAtOnce ...
+```
+
+### Deployment flow (exact commands)
+
+```powershell
+sam build
+sam deploy \
+  --stack-name ai-content-generation-service \
+  --parameter-overrides KnowledgeBaseId=... FreepikApiKey=... \
+  --capabilities CAPABILITY_IAM
+```
+(Or just `sam deploy` if you've already run `sam deploy --guided` once
+and have a local `samconfig.toml`.) What happens, matching the diagram
+in your request:
+
+```
+Developer changes code
+  → git push (or local `sam build`/`sam deploy`)
+  → sam build          (packages app/, frontend/, prompts/, requirements.txt)
+  → sam deploy          (CloudFormation change set against the existing stack)
+  → New Lambda Version  (SAM calls PublishVersion — only if code/config actually changed)
+  → DeploymentPreference shifts "prod" alias to it (canary/linear, or immediately if AllAtOnce)
+  → API Gateway's integration already points at "content_generation:prod" — nothing to update there
+  → Production traffic now on the new version (gradually, if canary/linear)
+```
+
+### GitHub Actions CI/CD (new: `.github/workflows/deploy.yml`)
+
+This project had no CI/CD before — this file is new, not a modification.
+On every push to `main`: checkout → OIDC-authenticate to AWS (no
+long-lived AWS keys stored in GitHub) → `sam build` → `sam deploy` with
+`--tags GitCommit=<sha> GitRef=<branch>`. That last part is the
+AWS-supported answer to "which commit produced Lambda Version N" — the
+tags apply to the whole stack, which CloudFormation propagates onto
+every taggable resource it manages, including the new
+`AWS::Lambda::Version`. No commit metadata goes into an environment
+variable (which you explicitly asked to avoid) and nothing sensitive is
+in a tag either — check it any time with:
+```bash
+aws lambda list-tags --resource <version-arn>
+```
+
+**One-time setup required** before this workflow can run (see
+`iam/github-actions-oidc.yaml`'s own header comment for the full
+rationale and exact command):
+```bash
+aws cloudformation deploy \
+  --template-file iam/github-actions-oidc.yaml \
+  --stack-name content-generation-ci-bootstrap \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --parameter-overrides GitHubOrg=<org> GitHubRepo=<repo> AppStackName=ai-content-generation-service
+```
+Then add these to your GitHub repo (Settings -> Secrets and variables):
+
+| Name | Type | Value |
+|---|---|---|
+| `AWS_DEPLOY_ROLE_ARN` | Secret | The bootstrap stack's `RoleArn` output |
+| `KNOWLEDGE_BASE_ID`, `FREEPIK_API_KEY` | Secrets | Same values you'd otherwise pass to `sam deploy --guided` |
+| `KNOWLEDGE_BASE_REGION`, `IMAGE_PROVIDER`, `DEPLOYMENT_PREFERENCE_TYPE` | Variables (non-secret) | Optional overrides — sensible defaults are baked into the workflow |
+
+The deploy role (`iam/github-actions-oidc.yaml`) is scoped to only this
+one stack's resources (CloudFormation stack ARN, Lambda actions,
+this stack's own S3/DynamoDB/IAM-role naming pattern, CodeDeploy for the
+DeploymentPreference) — not `AdministratorAccess`.
+
+### Rollback
+
+**Manual rollback (works regardless of `DeploymentPreferenceType`, and
+requires no rebuild):**
+```bash
+# 1. List versions
+aws lambda list-versions-by-function --function-name content_generation
+
+# 2. Find what "prod" currently points to
+aws lambda get-alias --function-name content_generation --name prod
+
+# 3. Roll back — replace 4 with your current bad version / 3 with the last-known-good one
+aws lambda update-alias \
+  --function-name content_generation \
+  --name prod \
+  --function-version 3
+
+# 4. Verify
+aws lambda get-alias --function-name content_generation --name prod
+#   -> "FunctionVersion": "3"
+
+# 5. Test the API
+curl "$(aws cloudformation describe-stacks --stack-name ai-content-generation-service \
+  --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue" --output text)/api/health"
+
+# 6. Once fixed, deploy forward again as normal — this creates a NEW
+#    version (e.g. 6); it does not reuse or renumber version 4.
+sam build && sam deploy
+```
+This takes effect **immediately** — `update-alias` is a synchronous,
+direct pointer change; no CodeDeploy wait, no traffic-shifting window
+(use this for "I need production fixed right now," not for testing a
+rollback candidate gradually).
+
+**Automatic rollback (only relevant while a canary/linear deployment is
+actively in progress):** if `ProdAliasErrorAlarm` enters `ALARM` during
+the shift window, CodeDeploy reverts the alias on its own — nothing to
+run. You can also stop an in-progress deployment manually:
+```bash
+aws deploy list-deployments --application-name <StackName>-ContentGenerationFunction --deployment-group-name <...>
+aws deploy stop-deployment --deployment-id <id> --auto-rollback-enabled
+```
+(Exact application/deployment-group names are SAM-generated — find them
+with `aws deploy list-applications` after your first canary deploy.)
+
+### Staging vs. production
+
+Not added, and I'd recommend against it *unless* you're about to onboard
+a second team or need to test against production-like data before every
+release — it's real added complexity (a second alias means a second set
+of "which config is this alias using" questions) that this project
+doesn't clearly need yet. If/when you do want it, the lowest-complexity
+option that fits this architecture is a **second alias on the same
+function** (`staging`), not a second Lambda function, second stack, or
+second AWS account/environment:
+```yaml
+# Illustrative only — not added to template.yaml
+StagingAlias:
+  Type: AWS::Lambda::Alias
+  Properties:
+    Name: staging
+    FunctionName: !Ref ContentGenerationFunction
+    FunctionVersion: !GetAtt ContentGenerationFunction.Version.Version
+```
+with its own API Gateway stage/route pointing at `content_generation:staging`
+instead of `:prod`. A separate SAM stack or AWS account is only worth it
+if staging needs genuinely different IAM/network isolation — not the
+case here, since every env var (Knowledge Base ID, image provider,
+etc.) already differs only by *value*, not by resource shape.
+
+### Version retention
+
+Old versions are **not deleted automatically** — nothing in this stack
+removes them, and none should be removed casually since they're your
+rollback targets. Versions cost nothing extra on their own (you're
+billed for invocations/duration, not for a version existing); the
+practical limit is each account's Lambda code-storage quota (default
+75GB, shared across all functions/versions). For a function this size,
+that's a very large number of retained versions before it matters. If
+you do want cleanup later, protect at minimum: the version `prod` (and
+`staging`, if added) currently points to, plus the last 5-10 versions
+for rollback headroom — e.g. a small scheduled script using
+`list-versions-by-function` + `get-alias` to compute the "protected" set
+and delete anything older via `delete-function` with a
+`--qualifier <version>`. Not included here since it isn't needed yet —
+flagged as a "nice to have later," not built preemptively.
+
+### Monitoring
+
+- **`ProdAliasErrorAlarm`** (added): `AWS/Lambda` `Errors`, summed over
+  60s, scoped to the `prod` alias — the one alarm actually wired to
+  auto-rollback via `DeploymentPreference.Alarms`.
+- **Worth watching by hand** (not wired to auto-rollback — kept simple
+  per your instructions, but useful in the CloudWatch console after any
+  deploy): `Throttles` and `Duration` (p95/p99, since this function's
+  60s timeout is mostly consumed by image generation) on the same
+  `FunctionName`/`Resource: content_generation:prod` dimensions, and API
+  Gateway's `5xx`/`4xx`/`Latency` metrics on `ContentGenerationApi`.
+- CloudWatch Logs (already in place, no change) still show every
+  invocation's logs regardless of version; the new cold-start log line
+  in `app/main.py` (`Cold start — Lambda function: ..., version: ...`)
+  makes it possible to `grep` logs for a specific version while
+  investigating a regression.
+
+### Failure scenarios (Section 18 of your request)
+
+| Scenario | What actually happens |
+|---|---|
+| SAM build fails | Workflow/local command exits before `sam deploy` ever runs — `prod` is untouched. |
+| SAM deploy fails (bad template, insufficient IAM, etc.) | CloudFormation change set fails or rolls back the stack update — no new version was ever pointed to by `prod`. |
+| New version deploys but errors under real traffic | With Canary/Linear: `ProdAliasErrorAlarm` fires, CodeDeploy auto-reverts `prod`. With AllAtOnce: use the manual rollback commands above. |
+| Knowledge Base misconfiguration | Same manual/automatic rollback path — this is a config value (`KNOWLEDGE_BASE_ID` etc.), not code, but it's baked into the version's environment at publish time, so rolling back the version rolls back the config with it. |
+| API Gateway integration itself is broken | `AutoPublishAlias` means the integration's target (`content_generation:prod`) never changes on deploy — only which version the alias resolves to does — so this specific failure mode is structurally avoided by this change. |
+
+### Testing (Section 20 of your request)
+
+1. `sam build && sam deploy` -> confirm `aws lambda list-versions-by-function --function-name content_generation` shows Version 1 (or whatever the first version under this config is).
+2. `aws lambda get-alias --function-name content_generation --name prod` -> `FunctionVersion` matches.
+3. Make a trivial code change (e.g. a comment) -> `sam build && sam deploy` -> a new version appears, and `get-alias` now shows it (immediately for `AllAtOnce`, or after the canary window for the default).
+4. Call the deployed API (`curl $ApiUrl/api/health`, then a real `/api/generate` request) -> confirm it responds.
+5. Roll back per the commands above -> `get-alias` shows the previous version.
+6. Call the API again -> confirm behavior matches the previous version (e.g. revert the trivial change first if it were observable).
+7. Deploy again -> confirm a new version number is issued (not a reused one) and `prod` moves to it.
+
+### IAM (Section 15) & multi-user note (Section 11)
+
+No changes to `ContentGenerationFunction`'s own execution role were
+needed for any of this — `AutoPublishAlias`/`DeploymentPreference`/the
+alarm are managed by CloudFormation/CodeDeploy using their own
+service-linked permissions, not the function's runtime role. The only
+new permissions are on the **deploy-time** role
+(`iam/github-actions-oidc.yaml`), scoped to this one stack. Lambda
+versions are **application releases**, not per-user state — every
+concurrent user hitting `prod` in a given moment is served by the same
+version, and nothing about this stateless-Lambda-per-request model
+changes; no global/in-memory state was introduced anywhere in this work.
 
 ## Cost Optimization
 
