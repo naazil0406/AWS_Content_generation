@@ -42,6 +42,26 @@ this one
 9. When genuinely unsure a rule below applies, prefer the more literal,
    more concrete, more content-grounded interpretation over the more
    generic or decorative one.
+10. Standalone comprehension: a viewer who has NEVER read the Generated
+    Content must be able to look at the finished image alone and
+    correctly state the specific action, behavior, hazard, or message
+    being shown — not merely recognize the industry or setting. The
+    hazard (if any), the correct or incorrect behavior, and the visible
+    relationship between them must all be legible from the visual by
+    itself. If the image would only make sense to someone who already
+    knows the text, it is not done yet — tighten the framing on the
+    decisive detail, or clarify the spatial relationship between the
+    person and the hazard/object, until the story reads on its own.
+11. Single strongest moment over collage: when the Generated Content
+    describes a multi-step sequence, a before/after contrast, or a
+    comparison, do not blend multiple steps or both sides of the
+    comparison into one physically incoherent image. Choose the single
+    most visually decisive instant — usually the turning point, the
+    point of contrast, or the moment the outcome is decided — and
+    depict only that one moment cleanly. (Where the OUTPUT FORMAT rules
+    below call for three distinct images, this means each of the three
+    still gets its OWN single decisive moment — never each of the three
+    trying to cram the whole sequence into one frame.)
 
 =====================================================
 PIPELINE
@@ -1343,6 +1363,29 @@ careful editor would:
   bare, and falls roughly within the 120-180 word target — pad a thin
   prompt with grounded sensory detail, or trim an overloaded one back to
   its strongest details, rather than leaving either as-is.
+- Dimension coverage check: count how many of the MINIMUM VISUAL
+  DIMENSION COVERAGE items (OUTPUT FORMAT above) each image_prompt
+  genuinely addresses with a content-grounded detail. If it falls short
+  of 12 applicable dimensions, add the missing ones as real, traceable
+  detail rather than shipping a thinner prompt.
+- Standalone comprehension check (run this last, on the whole image as
+  a reader would actually see it): cover up the Generated Content and
+  read only the image_prompt as if it were the finished photo/graphic.
+  Could you state, in your own words, the specific action, hazard, or
+  message being shown — not just "this is set in a warehouse/hospital/
+  etc."? If the honest answer is that you'd only be guessing based on
+  the industry, the prompt still fails Standalone comprehension (see
+  CORE PRINCIPLES above) even if it already passed the Generic Image
+  Test — go back and make the key relationship (hazard next to the
+  behavior guarding against it, the specific object mid-action, the
+  correct vs. incorrect detail) more visually explicit before finalizing.
+- Single-moment check (sequences/comparisons only): if the content_anchor
+  behind an image_prompt is a multi-step process or a before/after
+  contrast, confirm the prompt depicts exactly ONE decisive instant
+  rather than stitching multiple steps or both sides of the comparison
+  into one physically incoherent frame. If it reads like a collage of
+  actions no single photo could contain, cut it down to the single
+  strongest moment instead.
 - If you find an error while re-reading, silently correct it before
   producing the final JSON — never emit a draft with a known mistake.
 
@@ -1397,7 +1440,37 @@ the raw JSON object with exactly these five keys:
       element (per mode) with the material/sensory detail the
       Elaboration rule calls for, but not so long that later details
       crowd out or contradict earlier ones, or that the image generation
-      model's prompt window truncates the end. Every added detail must
+      model's prompt window truncates the end.
+
+      MINIMUM VISUAL DIMENSION COVERAGE: within that one continuous
+      paragraph (never as a bulleted or line-broken list — see Avoid
+      short prompts... under SHARED RULES), the prompt must explicitly
+      address at least 12 of the following dimensions, whichever are
+      applicable to the mode and content (a dimension that is
+      irrelevant to this specific image, e.g. facial expression in an
+      infographic icon, doesn't count against the 12):
+        exact scenario/moment; main subject; subject's specific action;
+        body posture/positioning; relevant objects (named concretely);
+        the relationship between those objects and the subject; the
+        workplace/environment; the relevant hazard (when the content
+        has one); the safety/corrective behavior (when applicable); the
+        visual cause-and-effect relationship between hazard and
+        behavior; camera composition/framing; camera angle/perspective;
+        lighting; realistic material/surface detail on key objects;
+        realistic equipment/tool detail; spatial relationships between
+        multiple objects or people; background/setting context; facial
+        expression (scene mode, when relevant); clothing/PPE (when
+        relevant); realistic physical interaction between the subject
+        and objects; and, for scene mode, an explicit photorealistic/
+        documentary-style statement. Do not pad a thin prompt with
+        filler adjectives just to hit the count — every dimension
+        addressed must still be a genuine, content-grounded detail per
+        the Elaboration and Groundedness rules; if a thin
+        Generated Content genuinely doesn't support 12 distinct
+        dimensions even after checking Retrieved Context, cover as many
+        as are honestly supported rather than inventing the rest.
+
+      Every added detail must
       still trace back to something the Generated Content supports or a
       minor inferred visual detail — elaboration means writing each
       required element more richly, not adding unrelated new elements

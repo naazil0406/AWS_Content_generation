@@ -29,10 +29,10 @@ INPUT YOU WILL RECEIVE
       something you need to re-validate individually)
 
 =====================================================
-THE TWELVE CHECKS AT A GLANCE
+THE FOURTEEN CHECKS AT A GLANCE
 =====================================================
 A quick reference before the full detail below — every entry gets all
-twelve regardless of how confident you are after reading the prompt
+fourteen regardless of how confident you are after reading the prompt
 once:
 A. Content grounding (traceable to a real clause, not invented)
 B. Semantic match (the visual concept actually bridges to the anchor)
@@ -46,8 +46,10 @@ I. Cross-entry consistency (same subject/environment/style across all three)
 J. Text necessity and accuracy (no text unless truly required, and exact if so)
 K. Behavioral-cue emotional/physical quality (the right action shown with its actual quality, not neutralized)
 L. Vague language and unrenderable claims (adjective-only emotion, meta-explanation, fabricated hazards, invisible omissions)
+M. Standalone comprehension (readable WITHOUT having read the Generated Content first, and — for sequences/comparisons — collapsed to one coherent moment, not a collage)
+N. Visual dimension coverage (at least 12 of the applicable dimensions from MINIMUM VISUAL DIMENSION COVERAGE, each a real content-grounded detail, not filler)
 The full explanation of each follows below — read it even if the entry
-looks fine at a glance; several of these (E, K, L especially) are
+looks fine at a glance; several of these (E, K, L, M especially) are
 designed to catch drafts that read as plausible on a first pass.
 
 =====================================================
@@ -184,10 +186,39 @@ L. VAGUE LANGUAGE AND UNRENDERABLE CLAIMS
    checks above, to warrant checking explicitly rather than assuming
    checks A-K already caught them.
 
+M. STANDALONE COMPREHENSION
+   Cover up the Generated Content and read only this entry's prompt as
+   if it were the finished image. Could a viewer who has never seen the
+   Generated Content state, in their own words, the specific action,
+   hazard, or message being shown — not merely "this is set in
+   [industry]"? If they could only guess the industry/setting but not
+   the actual behavior or hazard, FAIL — the key relationship (hazard
+   next to the behavior guarding against it, the specific object
+   mid-action, the correct-vs-incorrect detail) needs to be made more
+   visually explicit. Separately, if this entry's content_anchor is a
+   multi-step process or a before/after contrast, confirm the prompt
+   depicts exactly ONE decisive instant rather than several steps or
+   both sides of the comparison stitched into one physically incoherent
+   frame; if it reads like a collage, FAIL and rewrite it around the
+   single strongest moment instead.
+
+N. VISUAL DIMENSION COVERAGE
+   Count how many of the MINIMUM VISUAL DIMENSION COVERAGE items (see
+   the drafting agent's OUTPUT FORMAT instructions — scenario, subject,
+   action, posture, objects, object relationships, environment, hazard,
+   safety behavior, cause/effect, camera composition, camera angle,
+   lighting, materials, equipment, spatial relationships, background,
+   facial expression, PPE/clothing, physical interaction, photorealistic
+   statement) this entry's prompt genuinely addresses with a real,
+   content-grounded detail, counting only dimensions applicable to this
+   mode/content. If fewer than 12 applicable dimensions are covered,
+   FAIL and add the missing ones as genuine detail — never as
+   meaningless filler adjectives just to raise the count.
+
 =====================================================
 WHAT TO DO WITH EACH ENTRY
 =====================================================
-- PASS: the entry passes all twelve checks as originally written. Return
+- PASS: the entry passes all fourteen checks as originally written. Return
   it completely unchanged (content_anchor, visual_concept, and prompt
   all identical to the input) with "passed": true.
 - FAIL (fixable): the entry fails one or more checks, but you can

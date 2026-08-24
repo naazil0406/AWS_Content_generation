@@ -22,6 +22,38 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+# The app always expects exactly this many distinct image prompts per
+# request (see prompts/image_prompt_system.txt's OUTPUT FORMAT — "an
+# array of EXACTLY THREE objects"). Named here so the retry/logging
+# logic below and any future caller share one source of truth instead of
+# a bare literal "3" scattered around.
+EXPECTED_IMAGE_PROMPT_COUNT = 3
+
+# Soft floor used only for logging/telemetry (see _log_prompt_depth_warnings
+# below) — mirrors the "roughly 120-180 words" elaboration target in
+# image_prompt_system.txt's OUTPUT FORMAT section. This never blocks or
+# rewrites a response; it only helps notice a drafting call that came back
+# thin before it reaches Freepik.
+_MIN_PROMPT_WORD_COUNT = 90
+
+
+def _log_prompt_depth_warnings(prompt_entries: List[dict]) -> None:
+    """Best-effort, non-blocking depth check: warns (does not raise) when
+    a returned image_prompt looks too thin to carry the level of visual
+    detail (subject, action, posture, objects, environment, hazard,
+    camera, lighting, materials, PPE, etc.) the system prompt asks for.
+    This is telemetry only — the system prompt is what actually shapes
+    the model's output; this just surfaces regressions in logs.
+    """
+    for i, entry in enumerate(prompt_entries, start=1):
+        word_count = len((entry.get("prompt") or "").split())
+        if word_count < _MIN_PROMPT_WORD_COUNT:
+            logger.warning(
+                "Image prompt #%d looks thin (%d words, expected roughly "
+                "120-180) — may lack the required visual detail. anchor=%r",
+                i, word_count, entry.get("content_anchor", ""),
+            )
+
 
 def _strip_code_fences(text: str) -> str:
     text = text.strip()
@@ -260,19 +292,57 @@ class BaseLLMService:
             mode=mode,
             industry=industry,
         )
-        raw = _strip_code_fences(self._call_llm(system_prompt, user_prompt).strip())
 
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(
-                f"Image prompt generation did not return valid JSON: {exc}\n"
-                f"Raw response: {raw[:500]}"
-            ) from exc
+        def _call_and_parse(prompt_text: str) -> tuple[dict, List[dict]]:
+            raw = _strip_code_fences(self._call_llm(system_prompt, prompt_text).strip())
+            try:
+                parsed_data = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(
+                    f"Image prompt generation did not return valid JSON: {exc}\n"
+                    f"Raw response: {raw[:500]}"
+                ) from exc
+            return parsed_data, _parse_prompt_entries(parsed_data)
 
-        prompt_entries = _parse_prompt_entries(data)
+        data, prompt_entries = _call_and_parse(user_prompt)
         if not prompt_entries:
             raise RuntimeError("Image prompt generation returned no non-empty image_prompts.")
+
+        # The app always needs EXPECTED_IMAGE_PROMPT_COUNT (3) distinct,
+        # content-anchored images (see that constant's docstring). A model
+        # occasionally returns 1-2 instead of 3 despite the instructions;
+        # rather than silently shipping fewer images than the UI expects,
+        # retry the call exactly once with an explicit reminder before
+        # falling back to whatever came back (better than crashing the
+        # whole request over a count mismatch on the second attempt).
+        if len(prompt_entries) != EXPECTED_IMAGE_PROMPT_COUNT:
+            logger.warning(
+                "Image prompt generation returned %d entries, expected %d — retrying once.",
+                len(prompt_entries), EXPECTED_IMAGE_PROMPT_COUNT,
+            )
+            retry_prompt = (
+                user_prompt
+                + f"\n\nREMINDER: you must return EXACTLY "
+                  f"{EXPECTED_IMAGE_PROMPT_COUNT} entries in image_prompts, "
+                  f"each with a genuinely distinct content_anchor — not "
+                  f"{len(prompt_entries)}."
+            )
+            try:
+                retry_data, retry_entries = _call_and_parse(retry_prompt)
+            except RuntimeError as exc:
+                logger.warning("Image prompt retry failed (%s) — using first attempt's result.", exc)
+            else:
+                if retry_entries:
+                    data, prompt_entries = retry_data, retry_entries
+            if len(prompt_entries) != EXPECTED_IMAGE_PROMPT_COUNT:
+                logger.warning(
+                    "Image prompt generation still returned %d entries after retry "
+                    "(expected %d) — proceeding with what was returned rather than "
+                    "failing the whole request.",
+                    len(prompt_entries), EXPECTED_IMAGE_PROMPT_COUNT,
+                )
+
+        _log_prompt_depth_warnings(prompt_entries)
 
         return {
             "image_prompts": [e["prompt"] for e in prompt_entries],
@@ -337,6 +407,13 @@ class BaseLLMService:
         validated_entries = _parse_prompt_entries(data, keep_validation_fields=True)
         if not validated_entries:
             raise RuntimeError("Image prompt validation returned no non-empty image_prompts.")
+
+        if len(validated_entries) != EXPECTED_IMAGE_PROMPT_COUNT:
+            logger.warning(
+                "Image prompt validation returned %d entries, expected %d.",
+                len(validated_entries), EXPECTED_IMAGE_PROMPT_COUNT,
+            )
+        _log_prompt_depth_warnings(validated_entries)
 
         return {
             "image_prompts": [e["prompt"] for e in validated_entries],
