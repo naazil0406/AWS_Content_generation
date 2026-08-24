@@ -29,6 +29,28 @@ INPUT YOU WILL RECEIVE
       something you need to re-validate individually)
 
 =====================================================
+THE TWELVE CHECKS AT A GLANCE
+=====================================================
+A quick reference before the full detail below — every entry gets all
+twelve regardless of how confident you are after reading the prompt
+once:
+A. Content grounding (traceable to a real clause, not invented)
+B. Semantic match (the visual concept actually bridges to the anchor)
+C. Industry consistency (no drift between the three, no contradiction)
+D. Specificity (concrete real-world instances, never generic categories)
+E. Generic Image Test (would this fit any topic in this industry?)
+F. Content Type Test (generic to the Content Type, or specific to this content?)
+G. Distinctness (three different aspects, not the same idea reworded)
+H. Hazard + behavior pairing (safety content shows both, not just one)
+I. Cross-entry consistency (same subject/environment/style across all three)
+J. Text necessity and accuracy (no text unless truly required, and exact if so)
+K. Behavioral-cue emotional/physical quality (the right action shown with its actual quality, not neutralized)
+L. Vague language and unrenderable claims (adjective-only emotion, meta-explanation, fabricated hazards, invisible omissions)
+The full explanation of each follows below — read it even if the entry
+looks fine at a glance; several of these (E, K, L especially) are
+designed to catch drafts that read as plausible on a first pass.
+
+=====================================================
 VALIDATION CHECKS — apply ALL of these to EACH of the three entries
 =====================================================
 A. CONTENT GROUNDING
@@ -116,10 +138,56 @@ J. TEXT NECESSITY AND ACCURACY
    given), or a full sentence — FAILS this check; remove it from the
    prompt rather than leaving it in.
 
+K. BEHAVIORAL-CUE EMOTIONAL/PHYSICAL QUALITY
+   If the Generated Content describes a behavioral cue implying a State
+   or Error (per HUMAN PERFORMANCE STATE / ERROR VISUAL GUIDANCE in the
+   drafting instructions — e.g. "kept checking the clock," "yanked at
+   the stuck valve," "hadn't slept well") does this entry's prompt
+   actually depict that cue's emotional/physical quality — visible
+   urgency, tension, tiredness, or inattention — or does it describe the
+   right object/action but render it calm and neutral (e.g. a plain,
+   unhurried watch-check with no urgency shown)? A neutral rendering of
+   the right action still FAILS this check, exactly as if the wrong
+   action had been described — add the specific physical quality (a
+   hurried glance, a strained grip, heavy eyelids, a distracted gaze)
+   rather than leaving the action generic.
+
+L. VAGUE LANGUAGE AND UNRENDERABLE CLAIMS
+   Check this entry's prompt for four specific patterns and FAIL if any
+   are present:
+   (1) Emotion/state words with no specific physical action attached —
+       "a focused expression," "deliberate hand movements," "a hurried
+       posture" used alone rather than naming the actual body position,
+       grip, gaze, or object interaction.
+   (2) Meta-explanatory sentences — apply a functional test, not a word
+       search: would a camera capture this sentence, or does it comment
+       on why the scene matters? "Emphasizing," "illustrating,"
+       "highlighting," "demonstrating the importance of," "underscore,"
+       "reflects," "reinforces," and any other synonym doing the same
+       job all fail this the same way — checking for specific words is
+       not sufficient, since a rephrasing can dodge a word list while
+       still failing the same underlying test.
+   (3) A fabricated or untraceable hazard — a setting detail (lighting,
+       weather, time of day) assigned its own invented safety meaning
+       that this entry's own content_anchor was never actually about
+       (e.g. sunny weather explained as "UV radiation protection" when
+       the content_anchor is really about something unrelated like
+       checking mirrors before reversing). Industry-plausible is not the
+       same as content-grounded — if the hazard-sounding explanation
+       isn't what THIS content_anchor says, it fails regardless of how
+       natural it sounds for the setting.
+   (4) An omission described as visible — "a missed step is visible,"
+       "the skipped check can be seen" — rather than the one concrete,
+       present object/state that would look different if the step were
+       actually skipped.
+   All four are common enough, and different enough from the other
+   checks above, to warrant checking explicitly rather than assuming
+   checks A-K already caught them.
+
 =====================================================
 WHAT TO DO WITH EACH ENTRY
 =====================================================
-- PASS: the entry passes all ten checks as originally written. Return
+- PASS: the entry passes all twelve checks as originally written. Return
   it completely unchanged (content_anchor, visual_concept, and prompt
   all identical to the input) with "passed": true.
 - FAIL (fixable): the entry fails one or more checks, but you can

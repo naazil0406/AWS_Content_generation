@@ -114,6 +114,341 @@ _INDUSTRY_CONTEXT_HINTS: dict = {
     "Corporate Office": ["cubicle", "desk", "meeting room", "office chair", "computer monitor"],
 }
 
+# Reusable "Industry Visual Context" — one entry per canonical industry
+# (see AVAILABLE INDUSTRIES in image_prompt_system.txt), used so a
+# selected industry shapes an image through authentic real-world
+# workplace detail rather than just appending the industry's name to a
+# prompt. Injected (only for the ONE selected industry, never all 15)
+# into the Image Prompt Agent's user-turn prompt by
+# build_image_prompt_request() below — see get_industry_visual_context().
+#
+# Each field is a short, comma-separable list of plausible real-world
+# specifics for that industry — NOT a checklist to force into every
+# image. The system prompt instructs the model to draw only whatever is
+# relevant to the specific moment the Generated Content describes, the
+# same way a person familiar with that industry would only mention the
+# details that actually matter for a given scene.
+#
+# Adding a 16th industry later: add its name to image_prompt_system.txt's
+# AVAILABLE INDUSTRIES list AND an entry here with the same key — if you
+# only do the former, get_industry_visual_context() degrades gracefully
+# (returns an empty context block) rather than erroring.
+_INDUSTRY_VISUAL_CONTEXT: dict = {
+    "Warehouse & Logistics": {
+        "environment": "large indoor warehouse, tall steel pallet-racking aisles, concrete floor with painted lane markings, loading dock bay doors",
+        "workers_roles": "forklift operators, pickers/packers, dock workers, warehouse supervisors",
+        "ppe_clothing": "hi-vis vest or hi-vis jacket, steel-toe boots, hard hat near racking or dock areas",
+        "equipment": "forklift, pallet jack, conveyor belt, pallet racking, hand scanner, shrink-wrap machine",
+        "common_objects": "wooden pallets, cardboard boxes, shipping crates, stacked inventory, shipping labels",
+        "activities": "picking/packing orders, operating a forklift, staging pallets at a dock door, scanning inventory",
+        "layout": "long racking aisles, a shipping/receiving dock area, an open staging floor near loading bays",
+        "hazards": "forklift-pedestrian interaction, falling stock from racking, blind aisle corners, pinch points on conveyors",
+        "visual_characteristics": "bright overhead fluorescent or LED high-bay lighting, painted floor lanes, orange/blue steel racking",
+    },
+    "Manufacturing": {
+        "environment": "industrial factory floor, production line bays, exposed overhead conduit and ductwork",
+        "workers_roles": "machine operators, line workers, quality inspectors, floor supervisors",
+        "ppe_clothing": "safety glasses, hearing protection, cut-resistant gloves, hi-vis vest, steel-toe boots",
+        "equipment": "CNC machine, hydraulic press, conveyor line, robotic arm, hand tools at a workstation",
+        "common_objects": "metal or plastic parts/components, work-in-progress bins, machine guarding, tool cribs",
+        "activities": "operating a press or CNC machine, inspecting parts on a line, feeding material into a machine",
+        "layout": "rows of production stations along a line, machine bays separated by safety guarding/fencing",
+        "hazards": "pinch points, moving machinery, lockout/tagout points, flying debris, noise exposure",
+        "visual_characteristics": "industrial factory lighting, painted safety-yellow machine guarding, floor-marked walkways",
+    },
+    "Construction": {
+        "environment": "active construction site, partially built structure, exposed framing or rebar, unpaved ground",
+        "workers_roles": "construction workers/laborers, crane operators, site foremen, electricians/plumbers on site",
+        "ppe_clothing": "hard hat, hi-vis vest, safety glasses, work gloves, steel-toe boots, fall-arrest harness at height",
+        "equipment": "scaffolding, ladder, excavator, crane, rebar, power tools, wheelbarrow",
+        "common_objects": "lumber, concrete forms, tool belts, site fencing, warning tape, dust/debris",
+        "activities": "climbing scaffolding or a ladder, operating heavy equipment, tying rebar, using a power tool",
+        "layout": "an open job site with a structure under construction, scaffolding along a facade, a trench or excavation",
+        "hazards": "falls from height, unstable scaffolding/ladders, trench collapse, struck-by moving equipment",
+        "visual_characteristics": "daylight outdoor site lighting, dust in the air, exposed structural materials, site fencing/signage",
+    },
+    "Oil & Gas": {
+        "environment": "outdoor drilling or refinery site, industrial piping and tanks, an offshore platform",
+        "workers_roles": "rig workers, pipeline technicians, refinery operators, safety officers",
+        "ppe_clothing": "flame-resistant coveralls, hard hat, safety glasses, gas monitor clipped to clothing, work gloves",
+        "equipment": "drilling rig, wellhead, pipeline valves, pressure gauges, gas detector",
+        "common_objects": "pipe runs, storage tanks, valve stations, warning placards for flammable material",
+        "activities": "monitoring a wellhead or valve, checking a gas detector reading, inspecting pipeline connections",
+        "layout": "an outdoor industrial site with piping and tanks, a drilling platform, a control/monitoring station",
+        "hazards": "flammable gas exposure, high-pressure line failure, confined-space entry, slips on wet decking",
+        "visual_characteristics": "industrial steel piping and tanks, warning signage for flammability, outdoor daylight or floodlighting",
+    },
+    "Mining": {
+        "environment": "underground mine tunnel or open-pit quarry, exposed rock walls, heavy equipment roadways",
+        "workers_roles": "miners, excavator/haul-truck operators, site safety officers",
+        "ppe_clothing": "hard hat with headlamp, hi-vis coveralls, respirator/dust mask, steel-toe boots, safety glasses",
+        "equipment": "excavator, haul truck, drilling equipment, conveyor for extracted material",
+        "common_objects": "loose rock/ore, support beams or rock bolts (underground), dust, blast warning signage",
+        "activities": "operating an excavator or haul truck, inspecting a tunnel support, monitoring for gas/dust",
+        "layout": "an underground tunnel with support structures, or an open-pit quarry with terraced roadways",
+        "hazards": "cave-in/rockfall, heavy equipment blind spots, dust/air quality, blasting operations",
+        "visual_characteristics": "low ambient light with headlamp/floodlight illumination underground, or bright open-pit daylight",
+    },
+    "Utilities & Electrical": {
+        "environment": "electrical substation, overhead power line corridor, or a utility maintenance yard",
+        "workers_roles": "electrical linemen, substation technicians, utility crew supervisors",
+        "ppe_clothing": "insulated rubber gloves, arc-flash rated clothing, hard hat, safety glasses, fall-arrest harness on poles",
+        "equipment": "bucket truck, transformer, circuit breaker panel, power line, insulated tools, voltage tester",
+        "common_objects": "utility poles, overhead lines, warning/high-voltage signage, cable spools",
+        "activities": "working from a bucket truck on a line, testing voltage at a panel, inspecting a transformer",
+        "layout": "a substation yard with transformer banks, or an overhead line corridor along a road",
+        "hazards": "electrical shock/arc flash, working at height on poles, energized equipment",
+        "visual_characteristics": "high-voltage warning signage, outdoor utility yard or roadside setting, insulated equipment colors",
+    },
+    "Agriculture": {
+        "environment": "open farmland, a barn or grain storage structure, an irrigated field",
+        "workers_roles": "farm workers, equipment operators, farm supervisors",
+        "ppe_clothing": "wide-brim hat or cap, work gloves, sturdy boots, respirator when handling pesticide",
+        "equipment": "tractor, harvester, irrigation equipment, hand tools, pesticide sprayer",
+        "common_objects": "crops/livestock, hay bales, feed, farm fencing, storage bins",
+        "activities": "operating a tractor or harvester, tending livestock, applying pesticide, irrigating a field",
+        "layout": "open field rows, a barn/storage building, a farmyard with equipment parked nearby",
+        "hazards": "tractor rollover, machinery entanglement, pesticide exposure, heat exposure outdoors",
+        "visual_characteristics": "open-sky outdoor daylight, natural farmland colors, dust from fieldwork",
+    },
+    "Healthcare": {
+        "environment": "hospital ward, clinic exam room, or a healthcare facility corridor",
+        "workers_roles": "nurses, clinical staff, patients, healthcare supervisors",
+        "ppe_clothing": "scrubs, disposable gloves, surgical mask, PPE gown where clinically appropriate",
+        "equipment": "hospital bed, IV stand, monitoring equipment, medical cart, hand-sanitizer station",
+        "common_objects": "clipboard/chart, medical supplies, patient room furnishings",
+        "activities": "checking on a patient, reviewing a chart, a clinical handoff conversation, sanitizing hands",
+        "layout": "a patient room or exam room, a clinical corridor, a nurses' station",
+        "hazards": "needle-stick injury, patient-handling strain, infection exposure, slips on wet floors",
+        "visual_characteristics": "clean clinical lighting, muted clinical color palette, visible hand-hygiene stations",
+    },
+    "Transportation & Fleet": {
+        "environment": "a delivery truck cab, a fleet yard, or a roadway during a delivery route",
+        "workers_roles": "truck/delivery drivers, fleet dispatchers, fleet safety supervisors",
+        "ppe_clothing": "hi-vis vest during loading/unloading, seatbelt in-cab, sturdy footwear",
+        "equipment": "delivery truck or commercial vehicle, dashcam, handheld scanner, loading ramp",
+        "common_objects": "delivery packages/cargo, route paperwork or handheld device, truck cab interior",
+        "activities": "pre-trip vehicle inspection, loading/unloading cargo, driving on a route, checking mirrors before reversing",
+        "layout": "a fleet yard with parked vehicles, a truck cab interior, a roadside delivery stop",
+        "hazards": "distracted driving, backing-up blind spots, cargo shifting, fatigue on long routes",
+        "visual_characteristics": "roadway or fleet-yard daylight setting, commercial vehicle branding kept generic/unbranded",
+    },
+    "Food & Beverage Manufacturing": {
+        "environment": "a food processing plant floor, packaging line, or a beverage bottling facility",
+        "workers_roles": "line workers, food safety inspectors, plant supervisors",
+        "ppe_clothing": "hairnet, food-safe gloves, apron or smock, non-slip footwear",
+        "equipment": "conveyor packaging line, mixing/processing equipment, bottling/filling machinery",
+        "common_objects": "packaged product, ingredient bins, sanitation stations, quality-check equipment",
+        "activities": "monitoring a packaging line, sanitizing a work surface, inspecting product for quality",
+        "layout": "a processing floor with stainless-steel equipment, a packaging line, a sanitation station",
+        "hazards": "slip hazards from wet floors, machine entanglement on lines, sanitation chemical exposure",
+        "visual_characteristics": "bright clean processing-floor lighting, stainless-steel equipment, hygienic white/steel palette",
+    },
+    "Chemical & Petrochemical": {
+        "environment": "a chemical plant processing area, reactor/tank farm, or a laboratory-adjacent industrial space",
+        "workers_roles": "process operators, chemical technicians, plant safety officers",
+        "ppe_clothing": "chemical-resistant suit or apron, face shield or goggles, respirator, chemical-resistant gloves",
+        "equipment": "reactor vessel, piping and valves, fume hood, hazmat containment equipment",
+        "common_objects": "chemical storage drums/totes, hazard placards, spill containment materials",
+        "activities": "monitoring a reactor gauge, handling a chemical container, checking a fume hood",
+        "layout": "an industrial processing area with tanks and piping, a containment/storage area",
+        "hazards": "chemical exposure/spill, reactive material handling, confined-space entry",
+        "visual_characteristics": "industrial steel processing equipment, hazard diamond placards, outdoor or high-bay indoor plant setting",
+    },
+    "Aviation": {
+        "environment": "an airport tarmac/ramp area, a hangar, or ground-crew operations near an aircraft",
+        "workers_roles": "ground crew, aircraft maintenance technicians, ramp supervisors",
+        "ppe_clothing": "hi-vis vest, hearing protection near engines, safety glasses",
+        "equipment": "aircraft, ground service equipment (tugs, baggage carts), maintenance tools",
+        "common_objects": "baggage/cargo containers, chocks and cones, fuel hoses, a hangar bay",
+        "activities": "marshaling an aircraft, servicing/fueling on the ramp, performing a maintenance check in a hangar",
+        "layout": "an open tarmac/ramp area near an aircraft, an aircraft hangar interior",
+        "hazards": "jet blast/engine intake proximity, ground-vehicle traffic on the ramp, working near moving aircraft",
+        "visual_characteristics": "open-tarmac daylight or hangar interior lighting, aviation ground-support equipment colors",
+    },
+    "Maritime & Ports": {
+        "environment": "a shipping port container yard, a cargo vessel deck, or a dockside operations area",
+        "workers_roles": "dockworkers, crane operators, vessel crew, port safety officers",
+        "ppe_clothing": "hi-vis vest, hard hat, steel-toe boots, personal flotation device near open water",
+        "equipment": "gantry/dock crane, shipping containers, mooring lines, cargo vessel",
+        "common_objects": "stacked shipping containers, mooring bollards, cargo nets, dockside signage",
+        "activities": "operating a dock crane, securing mooring lines, inspecting cargo containers",
+        "layout": "a container yard with stacked containers, a dockside berth alongside a vessel",
+        "hazards": "crane load swing, falling into water, container-stacking collapse, deck slip hazards",
+        "visual_characteristics": "large industrial cranes, stacked colorful shipping containers, open waterside daylight",
+    },
+    "Waste Management": {
+        "environment": "a waste transfer station, a landfill working face, or a recycling sorting facility",
+        "workers_roles": "waste collection workers, equipment operators, facility safety supervisors",
+        "ppe_clothing": "hi-vis vest, puncture-resistant gloves, steel-toe boots, respirator where dust is present",
+        "equipment": "garbage/collection truck, compactor, sorting-line conveyor, loader/excavator at a landfill",
+        "common_objects": "waste bins, sorted recyclable materials, landfill working face, collection routes",
+        "activities": "collecting/loading waste, sorting material on a conveyor, operating a compactor or loader",
+        "layout": "a transfer station floor, a landfill working area, a recycling sorting line",
+        "hazards": "vehicle backing hazards, sharp/hazardous waste items, equipment entanglement on sorting lines",
+        "visual_characteristics": "industrial outdoor working-face setting or an indoor sorting facility, hi-vis-heavy color palette",
+    },
+    "Corporate Office": {
+        "environment": "an open-plan office, a meeting room, or an individual desk/cubicle workspace",
+        "workers_roles": "office employees, team leads/managers, administrative staff",
+        "ppe_clothing": "business casual or business attire — no industrial PPE in this setting",
+        "equipment": "desk computer/monitor, office chair, conference-room AV equipment, laptop",
+        "common_objects": "desks, office chairs, monitors, meeting-room table, notebooks/documents",
+        "activities": "working at a desk, a one-on-one or team conversation in a meeting room, reviewing a document",
+        "layout": "an open-plan desk area, an enclosed meeting/conference room, an individual workstation",
+        "hazards": "ergonomic strain, workplace stress, trip hazards from cables — generally lower-hazard than field industries",
+        "visual_characteristics": "clean modern office interior lighting, neutral corporate color palette, minimal clutter",
+    },
+}
+
+
+def get_industry_visual_context(industry: Optional[str]) -> str:
+    """Formats the ONE selected industry's Industry Visual Context (see
+    _INDUSTRY_VISUAL_CONTEXT above) into a compact text block for
+    injection into the Image Prompt Agent's user-turn prompt.
+
+    Returns "" if industry is empty or has no matching entry (e.g. a
+    16th industry was added to image_prompt_system.txt's list without a
+    corresponding entry here) — callers should treat that as "no extra
+    context available," not an error; the Industry name itself is still
+    passed through separately regardless.
+    """
+    if not industry:
+        return ""
+    ctx = _INDUSTRY_VISUAL_CONTEXT.get(industry.strip())
+    if not ctx:
+        return ""
+    lines = [f"Industry Visual Context for {industry.strip()} (use only what's relevant to this specific scene, do not force every item in):"]
+    for label, key in [
+        ("Typical environment", "environment"),
+        ("Workers/roles", "workers_roles"),
+        ("Clothing/PPE", "ppe_clothing"),
+        ("Equipment/machinery", "equipment"),
+        ("Common objects", "common_objects"),
+        ("Typical activities", "activities"),
+        ("Workplace layout", "layout"),
+        ("Relevant hazards", "hazards"),
+        ("Visual characteristics", "visual_characteristics"),
+    ]:
+        value = ctx.get(key)
+        if value:
+            lines.append(f"- {label}: {value}")
+    return "\n".join(lines)
+
+
+# Reusable "Safety Tool Context" — one entry per one of the five human-
+# performance tools ALREADY defined and selected by
+# prompts/content_generation_system.txt (Rate Your State, Close Calls,
+# RYS Supervisor Conversation, Habit Reminder, Anticipating Error). This
+# is deliberately NOT a second definition of what each tool IS — that
+# stays exclusively in content_generation_system.txt, decided by the
+# Content Generation Agent, never duplicated or re-decided here. This is
+# only a VISUAL bridge: given that a tool has already been woven into the
+# Generated Content, what does actually depicting that concept look like
+# in a photograph, as opposed to a generic "worker looking thoughtful"
+# pose? See detect_safety_tools_in_content() below for how the mention is
+# found, and get_safety_tool_visual_context() for formatting this for
+# injection into the Image Prompt Agent's prompt.
+_SAFETY_TOOL_VISUAL_CONTEXT: dict = {
+    "Rate Your State (RYS)": (
+        "A brief, deliberate pause before or during a task where the person checks in with "
+        "their own physical/mental/emotional state — a specific bodily cue of that self-check "
+        "(a breath, a hand resting on a piece of equipment, eyes momentarily closed or "
+        "downcast, shoulders visibly relaxing) rather than a generic thoughtful pose. Not a "
+        "checklist, form, or app on a screen — RYS is an internal self-check, not paperwork."
+    ),
+    "Close Calls": (
+        "A concrete near-miss moment captured at the instant something almost went wrong but "
+        "didn't — e.g. a foot stopped just short of a hazard, an object caught mid-fall, a "
+        "vehicle path narrowly missing a person — paired with a visible reaction (a startled "
+        "look, a hand raised) that reads as 'that almost happened,' not an aftermath of actual "
+        "injury or damage. Avoid depicting an actual accident, injury, or damage — Close Calls "
+        "is specifically about what almost happened."
+    ),
+    "RYS Supervisor Conversation": (
+        "A two-person conversation between a supervisor and an employee, in a calm, private, "
+        "or semi-private moment (not surrounded by the wider crew) — body language of "
+        "attentive listening and a supportive, non-confrontational tone (open posture, eye "
+        "contact, supervisor slightly leaning in) following up on a concern, not a reprimand "
+        "or disciplinary scene."
+    ),
+    "Habit Reminder": (
+        "The specific safe behavior itself being performed correctly and deliberately in the "
+        "moment — the emphasis is on the concrete action (e.g. the correct grip, the correct "
+        "PPE being put on, the correct checking motion) done with visible intent/attention, "
+        "as if it's a practiced routine — not an abstract reminder symbol, sticky note, or "
+        "poster."
+    ),
+    "Anticipating Error": (
+        "A pre-task planning moment: the person pausing BEFORE starting work to visually scan "
+        "or assess the task/area — looking at a specific hazard point (a pinch point, a blind "
+        "corner, an unstable surface) with a deliberate, evaluating expression, ideally with "
+        "that specific hazard visible in the same frame — depicting the planning moment itself, "
+        "not yet the task in progress."
+    ),
+}
+
+# Maps each canonical tool name above to the phrase(s) that would appear
+# in the Generated Content if the Content Generation Agent used it — see
+# content_generation_system.txt's "Example natural mentions" bullets,
+# which this list matches. Order here is scan order, not significance;
+# multiple tools CAN legitimately both match (e.g. content mentions both
+# an RYS check and the resulting RYS Supervisor Conversation).
+_SAFETY_TOOL_MENTION_PATTERNS: List[Tuple[str, str]] = [
+    ("RYS Supervisor Conversation", r"RYS Supervisor Conversation"),
+    ("Close Calls", r"\bClose Calls?\b"),
+    ("Habit Reminder", r"\bHabit Reminders?\b"),
+    ("Anticipating Error", r"\bAnticipating Errors?\b"),
+    ("Rate Your State (RYS)", r"\bRate Your State\b|\bRYS\b"),
+]
+
+
+def detect_safety_tools_in_content(content_text: str) -> List[str]:
+    """Scans the FINAL Generated Content (never the raw topic) for
+    mentions of the five safety tools already defined and selected by
+    content_generation_system.txt — this does not re-decide which tool
+    applies (that decision already happened when the content was
+    written); it only detects which one(s), if any, the Content
+    Generation Agent actually used, so the image-generation pipeline can
+    visually represent that same tool rather than a generic scene, and
+    never add a tool the content doesn't actually mention.
+
+    Returns canonical tool names (matching _SAFETY_TOOL_VISUAL_CONTEXT's
+    keys) in the fixed order above, deduplicated. Empty list is the
+    common case — most content mentions no tool, or the content type
+    doesn't apply (content_generation_system.txt only weighs these tools
+    in for Scenario/Spot the Mistake/Safety Tip/Recall Card/Question).
+    """
+    if not content_text:
+        return []
+    found = []
+    for name, pattern in _SAFETY_TOOL_MENTION_PATTERNS:
+        if re.search(pattern, content_text, re.IGNORECASE):
+            found.append(name)
+    return found
+
+
+def get_safety_tool_visual_context(tool_names: List[str]) -> str:
+    """Formats the visual context for whichever safety tool name(s)
+    detect_safety_tools_in_content() found, for injection into the Image
+    Prompt Agent's user-turn prompt. Returns "" if tool_names is empty —
+    the common case, and callers must not fall back to inventing a tool
+    when this is empty.
+    """
+    if not tool_names:
+        return ""
+    lines = [
+        "Safety Tool(s) already mentioned in the Generated Content (visualize the specific "
+        "moment described below for whichever applies to what the content actually says — "
+        "do not add a tool not listed here, and do not restate its pedagogical definition, "
+        "just depict the moment):"
+    ]
+    for name in tool_names:
+        visual = _SAFETY_TOOL_VISUAL_CONTEXT.get(name)
+        if visual:
+            lines.append(f"- {name}: {visual}")
+    return "\n".join(lines)
+
 # Negative-prompt fallbacks, used only when the Image Prompt Generation
 # Agent's JSON response comes back with an empty negative_prompt field.
 # One fallback per Output Mode (infographic/concept/scene) — a "scene"
@@ -407,6 +742,20 @@ def build_combined_user_prompt(
     if mode not in _VALID_MODES:
         mode = "infographic"
     user_prompt += f"\n\nOutput Mode (for the image-prompt half of your response): {mode}"
+    industry_context = get_industry_visual_context(industry)
+    if industry_context:
+        user_prompt += f"\n\n{industry_context}"
+    # NOTE: safety-tool detection (detect_safety_tools_in_content) is
+    # NOT run here, unlike build_image_prompt_request() above — this
+    # combined call produces content_text itself as part of this same
+    # response, so there is no finished content yet to scan at the time
+    # this prompt is built. The SAFETY TOOL VISUAL CONTEXT reference
+    # table baked into image_prompt_system.txt (loaded as this call's
+    # system prompt) covers this instead: the model is instructed to
+    # check its own just-written content_text for a tool mention and
+    # self-apply that table entry, mirroring how it already reads the
+    # static AVAILABLE INDUSTRIES table rather than being told the
+    # answer directly.
     return user_prompt
 
 
@@ -525,11 +874,18 @@ def build_image_prompt_request(
             f"images must be set in this industry's professional context, exactly as "
             f"given. Do not substitute, mix in, or drift toward a different industry, "
             f"even if the Generated Content's topic is more commonly associated with "
-            f"one — this Industry value always wins. Do not invent industry-specific "
-            f"facts, objects, or hazards beyond what the Generated Content/Retrieved "
-            f"Context supports; this field sets WHERE the content is shown, not what "
-            f"additional details to add.)"
+            f"one — this Industry value always wins. The Generated Content still decides "
+            f"WHAT happens — the Industry Visual Context below (if present) only supplies "
+            f"authentic real-world SETTING/PPE/equipment detail for showing it, never a "
+            f"new action, hazard, or claim the Generated Content doesn't support.)"
         )
+        industry_context = get_industry_visual_context(industry)
+        if industry_context:
+            user_prompt += f"\n\n{industry_context}"
+    safety_tools = detect_safety_tools_in_content(generated_content)
+    tool_context = get_safety_tool_visual_context(safety_tools)
+    if tool_context:
+        user_prompt += f"\n\n{tool_context}"
     return user_prompt
 
 
