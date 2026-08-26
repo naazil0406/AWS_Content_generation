@@ -229,7 +229,7 @@ h1 {
         <button class="btn" id="generateImageBtn">Generate + Image</button>
       </div>
       <div class="timer-row" id="timerRow" hidden>
-        Elapsed: <span class="timer-value" id="timerValue">0.0s</span> / target 60s
+        Elapsed: <span class="timer-value" id="timerValue">0.0s</span> / target 120s
       </div>
       <div class="status" id="generateStatus"></div>
     </div>
@@ -383,7 +383,7 @@ async function generateContentStreaming(contentType, topic, generateImages, stat
   const updateTimer = () => {
     const secs = (performance.now() - startedAt) / 1000;
     timerValueEl.textContent = `${secs.toFixed(1)}s`;
-    timerValueEl.className = "timer-value" + (secs > 60 ? " over" : secs > 45 ? " warn" : "");
+    timerValueEl.className = "timer-value" + (secs > 120 ? " over" : secs > 90 ? " warn" : "");
   };
   timerHandle = setInterval(updateTimer, 200);
   document.getElementById("timerRow").hidden = false;

@@ -162,7 +162,7 @@ class FreepikImageService:
         divisor = gcd(width, height) or 1
         return self._ASPECT_RATIOS.get((width // divisor, height // divisor), "square_1_1")
 
-    def _build_body(self, full_prompt: str) -> dict:
+    def _build_body(self, full_prompt: str, negative_prompt: str = "") -> dict:
         if self.is_mystic:
             body = {
                 "prompt": full_prompt,
@@ -182,8 +182,28 @@ class FreepikImageService:
             # lets Freepik apply its own default model instead.
             if self.model:
                 body["model"] = self.model
-            return body
-        return {"prompt": full_prompt, "aspect_ratio": self.aspect_ratio}
+        else:
+            body = {"prompt": full_prompt, "aspect_ratio": self.aspect_ratio}
+        if negative_prompt:
+            # A genuinely separate structured field, not just the trailing
+            # ". Avoid: ..." text baked into full_prompt below — that
+            # trailing text is STILL included too (defense-in-depth, and
+            # harmless if this field isn't actually honored by whichever
+            # specific Freepik endpoint is configured), but relying on it
+            # ALONE was a real gap: with scene-mode prompts often running
+            # to many lines, a single trailing
+            # sentence of style exclusions gets diluted at the tail of an
+            # increasingly long, dense positive description — a real,
+            # plausible explanation for cartoon/illustration-style output
+            # slipping through despite the positive prompt explicitly
+            # requesting photorealism. Passing it as its own field gives
+            # the model a real chance to weight it independently of the
+            # positive prompt's own length. NOTE: verify this exact field
+            # name against Freepik's current API docs for whichever
+            # specific model is configured — this sandbox has no live
+            # network access to confirm it live.
+            body["negative_prompt"] = negative_prompt
+        return body
 
     def _model_label(self) -> str:
         return self.model or "(Mystic default)"
@@ -192,7 +212,7 @@ class FreepikImageService:
         on_progress = on_progress or _noop_progress
         full_prompt = f"{prompt}. Avoid: {negative_prompt}" if negative_prompt else prompt
         headers = {"Content-Type": "application/json", "x-freepik-api-key": self.api_key}
-        body = self._build_body(full_prompt)
+        body = self._build_body(full_prompt, negative_prompt)
 
         logger.info("Submitting to Freepik (model=%s, prompt=%d chars).", self._model_label(), len(prompt))
         on_progress("submitted", {"provider": "freepik", "model": self._model_label()})

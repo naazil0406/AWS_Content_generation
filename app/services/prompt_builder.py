@@ -355,7 +355,11 @@ _SAFETY_TOOL_VISUAL_CONTEXT: dict = {
         "their own physical/mental/emotional state — a specific bodily cue of that self-check "
         "(a breath, a hand resting on a piece of equipment, eyes momentarily closed or "
         "downcast, shoulders visibly relaxing) rather than a generic thoughtful pose. Not a "
-        "checklist, form, or app on a screen — RYS is an internal self-check, not paperwork."
+        "checklist, form, or app on a screen — RYS is an internal self-check, not paperwork. "
+        "If the person operates powered equipment, it must be shown STOPPED/PARKED with hands "
+        "OFF primary operating controls during this pause — never eyes closed while still "
+        "gripping a steering wheel or other active control, which reads as continued unsafe "
+        "operation rather than a deliberate pause to check in."
     ),
     "Close Calls": (
         "A concrete near-miss moment captured at the instant something almost went wrong but "
@@ -363,7 +367,15 @@ _SAFETY_TOOL_VISUAL_CONTEXT: dict = {
         "vehicle path narrowly missing a person — paired with a visible reaction (a startled "
         "look, a hand raised) that reads as 'that almost happened,' not an aftermath of actual "
         "injury or damage. Avoid depicting an actual accident, injury, or damage — Close Calls "
-        "is specifically about what almost happened."
+        "is specifically about what almost happened. Achieve the near-miss tension through "
+        "DISTANCE, POSITIONING, ATTENTION, and SPATIAL RELATIONSHIP between the person and the "
+        "hazard — e.g. a pedestrian standing just outside a vehicle's turning path while looking "
+        "away, a hand paused a few inches short of a pinch point — never through a physically "
+        "exaggerated equipment state invented for drama, such as a vehicle's wheels lifting off "
+        "the ground mid-turn, unrealistic tipping, or a load visibly defying gravity. Equipment "
+        "stays physically grounded and normally operated at all times; the near-miss reads from "
+        "how close the person is to it, not from the equipment doing something it physically "
+        "can't."
     ),
     "RYS Supervisor Conversation": (
         "A two-person conversation between a supervisor and an employee, in a calm, private, "
@@ -882,10 +894,12 @@ def build_image_prompt_request(
         industry_context = get_industry_visual_context(industry)
         if industry_context:
             user_prompt += f"\n\n{industry_context}"
-    safety_tools = detect_safety_tools_in_content(generated_content)
-    tool_context = get_safety_tool_visual_context(safety_tools)
-    if tool_context:
-        user_prompt += f"\n\n{tool_context}"
+    # Safety-tool visual context injection is intentionally disabled —
+    # detect_safety_tools_in_content() and get_safety_tool_visual_context()
+    # below are kept defined (not deleted) but are no longer called here.
+    # The image concept must come solely from the Generated Content,
+    # Topic, and Industry Visual Context above, never from a lookup
+    # against the five named human-performance tools.
     return user_prompt
 
 

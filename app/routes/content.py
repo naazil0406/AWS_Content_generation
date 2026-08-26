@@ -165,13 +165,13 @@ def generate_stream(request: GenerateContentRequest):
         error             {"message": "..."}   -- terminal, stage failed
 
     Timing budget: the whole request targets TOTAL_DEADLINE_SECONDS
-    (default 55s, under the common 60s ceiling). Whatever's left after
-    KB retrieval + the combined LLM call is what image generation gets
-    (floor: IMAGE_STREAM_MIN_DEADLINE_SECONDS), passed as a per-request
-    poll_timeout override to the image provider — see
+    (default 115s, under the 120s Content + 3 Images ceiling). Whatever's
+    left after KB retrieval + the combined LLM call is what image
+    generation gets (floor: IMAGE_STREAM_MIN_DEADLINE_SECONDS), passed as
+    a per-request poll_timeout override to the image provider — see
     generate_variations_events(). A slow/cold KB (e.g. Aurora resuming)
     eats into this budget same as anything else; there's no way to
-    special-case that and still guarantee <60s total.
+    special-case that and still guarantee <120s total.
 
     Note for local testing: EventSource (the browser's native SSE
     client) only supports GET requests with no body, so this is a POST

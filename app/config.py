@@ -158,6 +158,14 @@ class Settings:
     # error, just after a short, bounded delay instead of immediately.
     FREEPIK_SUBMIT_MAX_RETRIES: int = int(os.getenv("FREEPIK_SUBMIT_MAX_RETRIES", "2"))
     FREEPIK_SUBMIT_RETRY_BACKOFF_SECONDS: float = float(os.getenv("FREEPIK_SUBMIT_RETRY_BACKOFF_SECONDS", "0.75"))
+    # Hard-enforced floor for scene-mode image prompts (see
+    # app/services/content_generation_engine.py's call to
+    # expand_short_image_prompts() and prompts/image_prompt_system.txt's
+    # LINE COUNT AND FORMAT section). 15-20 lines is the PREFERRED/normal
+    # target when the content supports that much detail — this setting
+    # is the minimum a prompt must reach before it's allowed through to
+    # Freepik at all, not the target itself.
+    IMAGE_PROMPT_MIN_LINES: int = int(os.getenv("IMAGE_PROMPT_MIN_LINES", "12"))
 
     # --- Generated Image Storage (S3) ---
     # Images are uploaded here and served back to the client as presigned

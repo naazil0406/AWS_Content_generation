@@ -405,9 +405,9 @@ sam deploy
 ```
 
 Runtime: Python 3.11 (set in `template.yaml`'s `Globals`).
-Timeout: 60s (image generation is the long pole — increase if your
-provider is slow). Memory: 1024MB (raise if Pillow/huggingface_hub
-image decoding needs more headroom).
+Timeout: 120s (Content + 3 Images target; image generation is the long
+pole — increase further if your provider is slow). Memory: 1024MB
+(raise if Pillow/huggingface_hub image decoding needs more headroom).
 
 ### Phase 5 — API Gateway + Frontend
 
@@ -481,7 +481,7 @@ controls how many variations are rendered (default 3, per spec).
 - [ ] Concurrency: set a reserved/provisioned concurrency limit if you
       need to protect downstream provider rate limits
 - [ ] Cost: Lambda cost is dominated by image-provider latency (up to
-      the 60s timeout) — Nova Canvas/Bedrock calls are billed per image;
+      the 120s timeout) — Nova Canvas/Bedrock calls are billed per image;
       Pollinations is free but rate-limited; size `IMAGE_VARIATIONS_COUNT`
       and timeout accordingly
 
@@ -716,7 +716,7 @@ flagged as a "nice to have later," not built preemptively.
 - **Worth watching by hand** (not wired to auto-rollback — kept simple
   per your instructions, but useful in the CloudWatch console after any
   deploy): `Throttles` and `Duration` (p95/p99, since this function's
-  60s timeout is mostly consumed by image generation) on the same
+  120s timeout is mostly consumed by image generation) on the same
   `FunctionName`/`Resource: content_generation:prod` dimensions, and API
   Gateway's `5xx`/`4xx`/`Latency` metrics on `ContentGenerationApi`.
 - CloudWatch Logs (already in place, no change) still show every
