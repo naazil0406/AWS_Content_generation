@@ -83,14 +83,28 @@ app.add_middleware(
 
 app.include_router(content.router, prefix="/api")
 
-# Loaded once per Lambda cold start, reused across warm invocations.
 _FRONTEND_PATH = Path(__file__).resolve().parent.parent / "frontend" / "index.html"
-_FRONTEND_HTML = _FRONTEND_PATH.read_text(encoding="utf-8") if _FRONTEND_PATH.exists() else None
 
 
 @app.get("/", response_class=HTMLResponse)
 def serve_frontend() -> str:
-    if _FRONTEND_HTML is None:
+    # Read fresh on every request rather than caching the file's content
+    # in a module-level variable at import time. The old cached-once
+    # approach was fine for Lambda (a fresh deploy always publishes a
+    # new version, which re-imports this module from scratch at its
+    # next cold start) but was a real footgun for local development:
+    # `uvicorn --reload` only watches .py files by default, so editing
+    # frontend/index.html and even fully restarting deployment tooling
+    # could still serve stale HTML indefinitely from whatever this
+    # module-level variable was set to at the process's last import —
+    # no amount of browser hard-refreshing fixes that, since the SERVER
+    # itself was returning old content, not something cached client-side.
+    # A single small HTML file read per page load is negligible cost
+    # (this is not a hot API path — it's the one-time initial page
+    # load, not something called per generation request) and it removes
+    # this entire class of "why isn't my frontend change showing up"
+    # confusion for good, in both local dev and Lambda.
+    if not _FRONTEND_PATH.exists():
         # Frontend not bundled — API still works standalone (e.g. local
         # dev without the frontend/ folder, or if you deploy API-only).
         return HTMLResponse(
@@ -98,7 +112,7 @@ def serve_frontend() -> str:
             "<p>API is running. frontend/index.html was not found in this deployment.</p>",
             status_code=200,
         )
-    return _FRONTEND_HTML
+    return _FRONTEND_PATH.read_text(encoding="utf-8")
 
 
 @app.get("/api/health")

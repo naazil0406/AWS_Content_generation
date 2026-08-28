@@ -150,6 +150,7 @@ class BaseLLMService:
         web_results: Optional[str] = None,
         daily_tip_focus: Optional[tuple] = None,
         avoid_repeating: Optional[List[str]] = None,
+        image_count: int = 3,
     ) -> dict:
         """Merged Content Generation Agent + Image Prompt Generation Agent
         call: one LLM round trip instead of two, since the second agent's
@@ -157,13 +158,17 @@ class BaseLLMService:
         — there's no reason that has to be two separate network calls.
 
         Returns the SAME shape as generate_image_prompt_package() (plus
-        content_text): image_prompts (exactly 3, content-anchored),
-        prompt_entries (the same 3 with content_anchor/visual_concept for
-        traceability), negative_prompt, alt_text, tags, summary. This
-        keeps callers (ContentGenerationEngine.generate()) able to treat
-        this path and the separate two-call path identically — see
+        content_text): image_prompts (exactly image_count,
+        content-anchored), prompt_entries (the same entries with
+        content_anchor/visual_concept for traceability), negative_prompt,
+        alt_text, tags, summary. This keeps callers
+        (ContentGenerationEngine.generate()) able to treat this path and
+        the separate two-call path identically — see
         _COMBINED_OUTPUT_FORMAT_OVERRIDE in prompt_builder.py for the
         contract this parses.
+
+        image_count: exactly how many image_prompts to request (1, 2, or
+          3), passed straight through to build_combined_user_prompt().
 
         Trade-off, stated plainly: this path does NOT run the dedicated
         second-pass validator (prompts/image_prompt_validator_system.txt)
@@ -186,6 +191,7 @@ class BaseLLMService:
             web_results=web_results,
             daily_tip_focus=daily_tip_focus,
             avoid_repeating=avoid_repeating,
+            image_count=image_count,
         )
         raw = _strip_code_fences(self._call_llm(system_prompt, user_prompt).strip())
 
@@ -229,26 +235,40 @@ class BaseLLMService:
         context_chunks: List[dict],
         mode: str,
         industry: Optional[str] = None,
+        retry_hint: bool = False,
+        image_count: int = 3,
     ) -> dict:
         """Image Prompt Generation Agent: turn the already-generated
-        content into THREE distinct, content-anchored image prompts (see
-        OUTPUT FORMAT in prompts/image_prompt_system.txt) + a shared
+        content into image_count distinct, content-anchored image prompts
+        (see OUTPUT FORMAT in prompts/image_prompt_system.txt) + a shared
         negative_prompt + alt_text + tags + summary. Returns a dict with:
-          image_prompts: List[str] — exactly 3 (or however many the model
-            returned; validated non-empty below) prompt strings, one
-            image rendered per entry — this is what Freepik consumes.
-          prompt_entries: List[dict] — the same 3, each as
+          image_prompts: List[str] — exactly image_count (or however many
+            the model actually returned; validated non-empty below)
+            prompt strings, one image rendered per entry — this is what
+            Freepik consumes.
+          prompt_entries: List[dict] — the same entries, each as
             {"content_anchor", "visual_concept", "prompt"} — the
             traceability data (which piece of the Generated Content each
             image represents) fed into the validation pass below.
           negative_prompt, alt_text, tags, summary — same as before,
-            shared across all three images.
+            shared across every image.
 
         industry: the industry resolved ONCE for this request by
           ContentGenerationEngine.generate() — see
           build_image_prompt_request(). Always authoritative when
           present; identical to what generate_content() above received
           for this same request.
+        retry_hint: passed straight through to build_image_prompt_request()
+          — True only on ContentGenerationEngine's code-level regeneration
+          retry after the first attempt's infographic prompts had no
+          literal quoted text.
+        image_count: exactly how many image_prompts to request (1, 2, or
+          3 — see GenerateContentRequest.image_count). Passed straight
+          through to build_image_prompt_request(), which sends it as an
+          explicit "Image Count" field the system prompt's IMAGE COUNT
+          override treats as authoritative — the Agent drafts exactly
+          this many prompts from the start, rather than always drafting
+          3 and having unused ones discarded downstream.
         """
         from app.services.prompt_builder import build_image_prompt_request
 
@@ -259,6 +279,8 @@ class BaseLLMService:
             context_chunks=context_chunks,
             mode=mode,
             industry=industry,
+            retry_hint=retry_hint,
+            image_count=image_count,
         )
         raw = _strip_code_fences(self._call_llm(system_prompt, user_prompt).strip())
 
@@ -295,14 +317,19 @@ class BaseLLMService:
         tags: List[str],
         summary: str,
         industry: Optional[str] = None,
+        topic: str = "",
     ) -> dict:
         """Image Prompt Validator: the second-pass QA step (see
         prompts/image_prompt_validator_system.txt) that checks each of
-        the drafting agent's three prompt_entries against the Generated
-        Content — content grounding, semantic match, industry
-        consistency, specificity, the Generic Image Test, the Content
-        Type Test, and distinctness — and rewrites any that fail, BEFORE
-        anything is sent to Freepik. Returns the same shape as
+        the drafting agent's prompt_entries (however many were
+        requested — 1, 2, or 3, inferred from len(prompt_entries)) against
+        the Topic AND
+        the Generated Content — content grounding, semantic match,
+        industry consistency, specificity, the Generic Image Test, the
+        Content Type Test, distinctness, and user prompt alignment (does
+        the scene tie back to both the Topic and the Generated Content,
+        with nothing unrelated introduced) — and rewrites any that fail,
+        BEFORE anything is sent to Freepik. Returns the same shape as
         generate_image_prompt_package() above (image_prompts,
         prompt_entries, negative_prompt, alt_text, tags, summary), plus
         prompt_entries carrying "passed"/"reason" for logging.
@@ -315,6 +342,7 @@ class BaseLLMService:
 
         user_prompt = build_image_prompt_validation_request(
             content_type=content_type,
+            topic=topic,
             mode=mode,
             generated_content=generated_content,
             draft_entries=prompt_entries,

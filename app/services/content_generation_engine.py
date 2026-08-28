@@ -27,6 +27,8 @@ from app.services.prompt_builder import (
     build_combined_system_prompt,
     detect_explicit_industry,
     image_mode_for_content_type,
+    infographic_prompt_has_literal_text,
+    infographic_prompt_is_text_dense,
     load_content_generation_system_prompt,
     load_image_prompt_system_prompt,
     load_image_prompt_validator_system_prompt,
@@ -91,8 +93,21 @@ class ContentGenerationEngine:
         web_results: Optional[str] = None,
         avoid_repeating: Optional[List[str]] = None,
         previous_industry: Optional[str] = None,
+        image_count: int = 3,
     ) -> dict:
         """Run the engine pipeline for one request.
+
+        image_count: exactly how many image_prompts the Image Prompt
+          Agent should produce (1, 2, or 3 — see
+          GenerateContentRequest.image_count in app/schemas/content.py).
+          Ignored entirely when generate_images is False. Passed straight
+          through to whichever image-prompt-generation path runs
+          (combined or separate — see below); the Agent drafts exactly
+          this many prompts from the start rather than always drafting 3
+          and having the unused ones discarded downstream by
+          app/routes/content.py's resolve_prompts_for_count(), which
+          remains in place afterward purely as a defensive normalizer in
+          case the model doesn't comply with the requested count.
 
         industry: an explicit industry to use for this request, if the
           caller has one (e.g. "Manufacturing"). If omitted, the engine
@@ -149,6 +164,8 @@ class ContentGenerationEngine:
                 f"Unsupported content_type '{content_type}'. Supported types: {', '.join(CONTENT_TYPES)}"
             )
         industry = (industry or "").strip() or None
+        if image_count not in (1, 2, 3):
+            image_count = 3
 
         # 1 & 2: retrieve and analyze Knowledge Base context.
         try:
@@ -183,6 +200,16 @@ class ContentGenerationEngine:
         mode = image_mode_for_content_type(content_type)
         content_sys_prompt = load_content_generation_system_prompt()
         img_sys_prompt = load_image_prompt_system_prompt()
+        # Content Type = "Infographic" now uses the SAME two prompt files
+        # as every other Content Type — image_prompt_system.txt's own
+        # "MODE: infographic" section (which requires literal, exact
+        # in-image text) and image_prompt_validator_system.txt's checks
+        # J/M enforce this, no separate file involved. `is_infographic`
+        # is kept here only to drive the code-level literal-text safety
+        # net below (see infographic_prompt_has_literal_text()) — a
+        # defensive re-check that doesn't rely solely on the LLM having
+        # followed those instructions.
+        is_infographic = content_type == "Infographic"
 
         daily_tip_focus = pick_daily_tip_focus() if content_type == "Daily Tip" else None
         # Resolve exactly ONE industry for this entire request, once,
@@ -249,6 +276,7 @@ class ContentGenerationEngine:
                     web_results=web_results,
                     daily_tip_focus=daily_tip_focus,
                     avoid_repeating=avoid_repeating,
+                    image_count=image_count,
                 )
                 content_text = combined_result["content_text"]
                 # Same shape generate_image_prompt_package() would have
@@ -313,6 +341,7 @@ class ContentGenerationEngine:
                     context_chunks=context_chunks,
                     mode=mode,
                     industry=selected_industry,
+                    image_count=image_count,
                 )
             except Exception as exc:
                 logger.error("Image prompt generation failed: %s", exc)
@@ -340,6 +369,7 @@ class ContentGenerationEngine:
             validated_package = self.image_prompt_llm.validate_image_prompt_package(
                 system_prompt=validator_sys_prompt,
                 content_type=content_type,
+                topic=topic,
                 mode=mode,
                 generated_content=content_text,
                 prompt_entries=prompt_entries,
@@ -361,6 +391,83 @@ class ContentGenerationEngine:
             logger.warning("Image prompt validation step failed, using unvalidated drafts: %s", exc)
 
         prompt_entries = image_package.get("prompt_entries") or prompt_entries
+
+        # Code-level safety net for Infographic requests only: the LLM-
+        # side instructions (infographic_image_prompt_system.txt /
+        # infographic_image_prompt_validator_system.txt) are the primary
+        # enforcement of "literal in-image text is required" and "text
+        # density stays low enough to render legibly," but the
+        # application should not blindly trust an LLM followed them.
+        # If ANY of the three final prompts still has no quoted literal
+        # text, OR has MORE quoted strings than the TEXT DENSITY LIMIT
+        # allows (a busy layout is exactly what garbles legibility, per
+        # the production issue this check was added for), do exactly one
+        # full regeneration (draft again, validate again) before falling
+        # back — never send a textless or text-overloaded prompt to
+        # Freepik for an Infographic request if a retry can fix it.
+        if is_infographic and generate_images:
+            def _bad_infographic_prompts(prompts):
+                return [
+                    p for p in prompts
+                    if not infographic_prompt_has_literal_text(p)
+                    or infographic_prompt_is_text_dense(p)
+                ]
+
+            bad_prompts = _bad_infographic_prompts(image_package.get("image_prompts", []))
+            if bad_prompts:
+                logger.warning(
+                    "Infographic image prompt(s) missing literal text or over the "
+                    "text-density limit after drafting/validation (%d of %d) — retrying once.",
+                    len(bad_prompts), len(image_package.get("image_prompts", [])),
+                )
+                try:
+                    retry_package = self.image_prompt_llm.generate_image_prompt_package(
+                        system_prompt=img_sys_prompt,
+                        content_type=content_type,
+                        topic=topic,
+                        generated_content=content_text,
+                        context_chunks=context_chunks,
+                        mode=mode,
+                        industry=selected_industry,
+                        retry_hint=True,
+                        image_count=image_count,
+                    )
+                    retry_entries = retry_package.get("prompt_entries") or [
+                        {"content_anchor": "", "visual_concept": "", "prompt": p}
+                        for p in retry_package.get("image_prompts", [])
+                    ]
+                    retry_validated = self.image_prompt_llm.validate_image_prompt_package(
+                        system_prompt=validator_sys_prompt,
+                        content_type=content_type,
+                        topic=topic,
+                        mode=mode,
+                        generated_content=content_text,
+                        prompt_entries=retry_entries,
+                        negative_prompt=retry_package.get("negative_prompt", ""),
+                        alt_text=retry_package.get("alt_text", ""),
+                        tags=retry_package.get("tags", []),
+                        summary=retry_package.get("summary", ""),
+                        industry=selected_industry,
+                    )
+                    retry_prompts = retry_validated.get("image_prompts") or retry_package.get("image_prompts", [])
+                    still_bad = _bad_infographic_prompts(retry_prompts)
+                    if retry_prompts and len(still_bad) < len(bad_prompts):
+                        # Strictly better (or fully fixed) — use the retry.
+                        image_package = retry_validated if retry_validated.get("image_prompts") else retry_package
+                        prompt_entries = image_package.get("prompt_entries") or prompt_entries
+                        if still_bad:
+                            logger.warning(
+                                "Infographic retry improved but did not fully fix text "
+                                "presence/density (%d of %d still bad) — proceeding with retry result.",
+                                len(still_bad), len(retry_prompts),
+                            )
+                    else:
+                        logger.error(
+                            "Infographic retry did not improve text presence/density — "
+                            "proceeding with the original (best-effort) drafts."
+                        )
+                except Exception as exc:  # noqa: BLE001 - retry is best-effort, never fatal
+                    logger.warning("Infographic text-quality retry failed, using prior drafts: %s", exc)
 
         # Fall back to mode-specific fixed negative prompt if model returned an empty string.
         negative_prompt = image_package.get("negative_prompt", "").strip() or negative_prompt_for_mode(mode)

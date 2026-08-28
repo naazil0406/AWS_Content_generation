@@ -107,7 +107,18 @@ class Settings:
     # key), or "aws" (Bedrock Nova Canvas). Changing providers is a
     # config-only change — see app/services/image_generation_service.py.
     IMAGE_PROVIDER: str = os.getenv("IMAGE_PROVIDER", "freepik")
+    # SAFE DEFAULT only, not a fixed setting: GenerateContentRequest.
+    # image_count (see app/schemas/content.py) overrides this per-request
+    # via resolve_prompts_for_count() in image_generation_service.py.
+    # This value only applies when a request omits image_count.
     IMAGE_VARIATIONS_COUNT: int = int(os.getenv("IMAGE_VARIATIONS_COUNT", "3"))
+    # SAFE DEFAULT only, not a fixed setting: GenerateContentRequest.
+    # image_aspect_ratio overrides this per-request via
+    # get_image_gen_service()'s dimensions_for_ratio() (Pollinations/Nova
+    # Canvas) or FreepikImageService's aspect_ratio_key (Freepik). No
+    # longer wired into template.yaml as a deploy-time parameter — see
+    # that file's Parameters block for the full history/rationale. This
+    # value only applies when a request omits image_aspect_ratio.
     IMAGE_WIDTH: int = int(os.getenv("IMAGE_WIDTH", "1024"))
     IMAGE_HEIGHT: int = int(os.getenv("IMAGE_HEIGHT", "1024"))
 
@@ -132,10 +143,24 @@ class Settings:
     # third-party benchmarks). Must match a key in _FLUX_ENDPOINTS above
     # exactly, or it silently falls back to Mystic.
     FREEPIK_MODEL: str = os.getenv("FREEPIK_MODEL", "")
+    # SAFE DEFAULT only, not a fixed setting: GenerateContentRequest.
+    # image_resolution overrides this per-request (Mystic endpoint only —
+    # see get_image_gen_service()/FreepikImageService._build_body). No
+    # longer wired into template.yaml as a deploy-time parameter. This
+    # value only applies when a request omits image_resolution.
     FREEPIK_RESOLUTION: str = os.getenv("FREEPIK_RESOLUTION", "2k")
     FREEPIK_FILTER_NSFW: bool = os.getenv("FREEPIK_FILTER_NSFW", "true").strip().lower() == "true"
     FREEPIK_POLL_INTERVAL: float = float(os.getenv("FREEPIK_POLL_INTERVAL", "3.0"))
-    FREEPIK_POLL_TIMEOUT: float = float(os.getenv("FREEPIK_POLL_TIMEOUT", "120.0"))
+    # 170s (was 120s): 120s sat INSIDE Mystic's documented ~90-130s
+    # real-world latency range, not safely above it — meaning a
+    # meaningful share of legitimate, successful renders were being cut
+    # off by this timeout and reported as failures. 170s leaves real
+    # margin over the 90-130s range while still fitting comfortably
+    # under ContentGenerationFunction's Timeout (see template.yaml,
+    # which now also exposes both of these as deploy-time Parameters —
+    # FreepikPollTimeoutSeconds/FreepikPollIntervalSeconds — so this
+    # default is a starting point, not the only tunable value).
+    FREEPIK_POLL_TIMEOUT: float = float(os.getenv("FREEPIK_POLL_TIMEOUT", "170.0"))
     # Freepik's gateway appears to reject some fraction of truly
     # simultaneous submissions from the same API key/plan — observed in
     # production as 2 of 3 parallel image requests failing at the same

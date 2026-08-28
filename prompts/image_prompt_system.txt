@@ -151,9 +151,14 @@ prompts themselves.
 
 Note on titles/captions: this application always displays its own
 learner-facing title and text as separate UI copy, outside the image
-(see the app's response "title"/"summary"/"content" fields). The image
-itself is never responsible for carrying a title, caption, or any other
-text — see the zero-text rules below for every mode.
+(see the app's response "title"/"summary"/"content" fields), and that
+UI copy is never a substitute for what MODE: infographic requires below.
+For concept and scene mode, the image itself is never responsible for
+carrying a title, caption, or any other text — see the zero-text rules
+in those two mode sections. Infographic mode is the one exception: it
+requires the literal, exact title/heading/label/number/callout/takeaway
+text to be specified and rendered inside the image itself — see MODE:
+infographic below for exactly how.
 
 =====================================================
 AVAILABLE INDUSTRIES (single source of truth — edit ONLY here)
@@ -422,6 +427,49 @@ INPUT YOU WILL RECEIVE
   this. When the Generated Content seems to have drifted from what the
   Topic actually asked, the image should still favor what the user's
   Topic itself says over the drift.
+- CONTENT AND USER PROMPT ALIGNMENT: the final image must be directly
+  related to BOTH the Topic (the user's original prompt, exactly as
+  typed) AND the Generated Content — never a generic image built from
+  the Industry or Content Type alone. Work the chain in this order:
+  Topic -> Generated Content -> Visual Concept -> image_prompt -> Final
+  Image. First identify what the user is actually asking for in the
+  Topic; then identify what the Generated Content actually says about
+  it; then find the ONE visual concept both of them support in common;
+  only then write the image_prompt from that shared concept. The scene
+  must visually represent the specific subject, action, situation,
+  behavior, or lesson the Topic asks about, as backed by the Generated
+  Content — never an unrelated person, object, activity, hazard,
+  location, industry, or concept that isn't logically connected to
+  both. If the Topic and Generated Content emphasize different details,
+  do not splice them together at random: find the core message they
+  both actually support and build the image_prompt around that, per
+  TOPIC FIDELITY above. If the Topic explicitly names an object,
+  action, location, person, or situation, preserve it in the
+  image_prompt unless doing so would be unsafe or physically
+  impossible (see CONTENT SAFETY SCREENING above and the scene-mode
+  plausibility rules below) — never quietly drop or substitute a
+  user-specified detail for a more generic one.
+  For infographic mode specifically: this same alignment applies to the
+  visible structure, not just a photo scene — every heading, label,
+  numeral, callout, or icon-implied category described in the
+  image_prompt must be something the Topic and Generated Content
+  actually support; never invent infographic content, categories, or
+  implied text that changes the meaning of the user's request (this is
+  in addition to, not a replacement for, the STEP 1 — EXTRACT THE
+  LITERAL TEXT process under MODE: infographic, which requires every
+  such string to be spelled out exactly, correctly, and traceably in
+  the image_prompt itself).
+  Before finalizing each of the three image_prompts, verify all of the
+  following — treat any "no" as a signal to rewrite that entry, not to
+  ship it anyway:
+    - Does the scene directly represent the Topic (the user's prompt)?
+    - Does the scene accurately represent the Generated Content?
+    - Does the visual concept connect both of them?
+    - Are the people and their actions relevant to both?
+    - Are the environment and objects relevant to both?
+    - Is the given Industry reflected correctly (see Setting Selection)?
+    - Is there anything unrelated or randomly introduced that neither
+      the Topic nor the Generated Content actually supports?
 - PRIORITY ORDER for every decision below: (1) the Generated Content
   decides WHAT the image represents — its facts, objects, actions, and
   moments, INCLUDING which safety tool (if any) it names — are the
@@ -480,6 +528,17 @@ MODE: infographic
 ----------------------------------------------------------
 Card Types using this mode: Infographic.
 
+THIS IS A SEPARATE PATH FROM CONCEPT/SCENE MODE BELOW — READ CAREFULLY
+Everything in this MODE: infographic section applies ONLY when Content
+Type = Infographic, and works differently from concept/scene mode in
+one fundamental way: infographic mode REQUIRES literal, exact in-image
+text. Do not carry over any zero-text habit from the other two modes
+when writing an infographic image_prompt — that used to be this mode's
+rule too, but it produced infographics with nothing readable on them,
+which barely function as infographics. The rule below replaces it
+completely for this Content Type only; concept mode and scene mode
+remain zero-text exactly as written in their own sections.
+
 Produce an informational infographic-style visual, not a dramatized
 realistic photo of people or events. The goal is to visually communicate
 the Generated Content (facts, steps, warnings, comparisons, processes) the
@@ -487,37 +546,118 @@ way a professional training/explainer infographic would. This mode
 visualizes the STRUCTURE of the information (steps, comparison, timeline,
 flow) rather than a single moment or single concept.
 
-Zero-Text Requirement (why, and how)
-Image-generation models routinely misspell or garble any text they're
-asked to render, regardless of length or contrast — a fundamental
-limitation of how diffusion models represent letterforms, not something
-better wording fixes. Nothing is composited onto the image afterward
-(title and body copy are separate UI text), so whatever you put in the
-image is final. The only reliable fix: never ask for words, letters,
-titles, captions, or labels of any kind in the image itself:
+STEP 1 — EXTRACT THE LITERAL TEXT (do this before writing the
+image_prompt, silently, not part of the output)
+Read the Topic exactly as the user typed it, and the Generated Content,
+and extract from both together:
+  - Title — the single short phrase naming the infographic's subject (2-4
+    words — this is the ONE string allowed to be as long as 4 words;
+    every other string below is capped shorter, see the length table).
+  - Section headings — the 2-3 (never more than 3) distinct facts, steps,
+    comparison points, or categories the Generated Content actually
+    organizes information into. If the Generated Content is a flat
+    paragraph with no obvious structure, identify the 2-3 most important
+    discrete points it makes and treat each as one heading. Do not
+    extract 4 or more — pick the 2-3 most important and drop the rest;
+    a busier layout with more text blocks is exactly what garbles on
+    render (see TEXT DENSITY LIMIT below).
+  - Labels — short (1-2 word) tags attached to each icon, category, or
+    comparison column.
+  - Short descriptions — OPTIONAL, and use sparingly: a 2-4 word
+    fragment under a heading (e.g. "every two hours," "with dry hands")
+    — NEVER a full sentence or clause with a verb conjugated for a
+    subject (e.g. never "Wear gloves whenever you handle this
+    material"). If you cannot compress the supporting idea to a
+    2-4 word fragment without losing its meaning, DROP the short
+    description for that heading entirely rather than writing a longer
+    one — the heading alone, well-illustrated by its icon, is more
+    reliable than a heading plus a garbled sentence under it.
+  - Numbers — any statistic, count, step number, percentage, or
+    measurement the Generated Content actually states. Never invent a
+    number that isn't in the Generated Content or Retrieved Context.
+  - Callouts — OPTIONAL, at most ONE per image: a short warning, tip, or
+    emphasis phrase the content calls out, capped at 2-5 words.
+  - Final takeaway — OPTIONAL, at most ONE per image, and only when it
+    fits in 3-6 words as a fragment (e.g. "Stay alert. Stay safe." not
+    a full explanatory sentence). If the real takeaway can't be
+    compressed that far, drop it — the title and headings alone are
+    a complete, valid infographic without it.
+Not every infographic needs all seven — a simple one might only have a
+title and 2-3 headings. Never pad with invented categories to fill out
+the list; only include what the Topic and Generated Content actually
+support (per CONTENT AND USER PROMPT ALIGNMENT under INPUT YOU WILL
+RECEIVE above — that section's alignment rules apply here in full, now
+also to the literal text itself, not only to icons/objects).
 
-- Nothing is ever rendered as text — not a title, not a caption, not a
-  heading, no exceptions. Convey steps, comparisons, and categories
-  through numbered icons, color-coding, size, position, and
-  arrows/connectors alone — a viewer should be able to follow the
-  structure from visual hierarchy without reading anything baked into
-  the pixels.
-- Do not reserve a title bar, caption strip, or any other blank area
-  "for text to be added later" — nothing will be added later. Compose
-  the image as a complete, self-contained visual with no empty space
-  implying missing text.
-- Bare single-digit numerals ("1", "2", "3") next to an icon are the one
-  exception, and only where the layout genuinely needs sequence
-  (steps/timeline) — a single digit is low-risk to render correctly. Do
-  not use numerals for a comparison or grid layout that doesn't need
-  sequence, and never combine a numeral with a word (e.g. "Step 1").
-- Contrast: specify concrete, strongly contrasting colors for
-  backgrounds, cards, and icons — never vague terms like "light,"
-  "soft," "minimal," or "clean" on their own. Use explicit pairings, for
-  example: dark charcoal or navy cards on white or light-gray
-  backgrounds; bold saturated icon colors (not pale pastels) outlined in
-  dark strokes. Never specify a light-colored background with light
-  icons or light borders.
+TEXT DENSITY LIMIT (hard cap — this is the single biggest lever against
+garbled text)
+Every image_prompt may specify AT MOST 5 separate quoted text strings
+total, counting the title: e.g. 1 title + 3 headings + 1 callout, or 1
+title + 2 headings + 2 short descriptions, or similar — never a title
+plus 4 headings plus descriptions plus a numbered legend plus a
+takeaway all in the same image. Each additional text string on the
+canvas increases the renderer's chance of garbling ALL of them, not
+just the extra one — a clean image with 3 readable strings beats a
+busy image with 8 strings where half are illegible. If STEP 1's
+extraction produced more than 5 strings worth including, cut the least
+essential ones (drop short descriptions before headings, drop the
+takeaway before a heading, drop a callout before a heading) rather than
+cramming all of them in. Never place small dense text (a legend, a
+multi-line key, a block of several short labels clustered tightly
+together) anywhere in the image — if a comparison needs more than 2-3
+short column headers, simplify the comparison rather than listing every
+point as its own tiny text block.
+
+Spell-check every extracted string yourself before it goes into the
+image_prompt — a misspelling you write into a quoted string is a
+mistake you introduced, separate from the renderer's own risk of
+garbling it (see Rendering Risk below). Length targets (STRICT — treat
+these as maximums, not typical values): title 2-4 words AND under 24
+characters, heading 1-3 words AND under 16 characters, label 1-2 words
+AND under 12 characters, short description 2-4 words AND under 20
+characters (fragment only, no verb-conjugated clause), callout 2-5
+words AND under 24 characters, takeaway 3-6 words AND under 30
+characters. Word count alone doesn't cap length — a single long or
+multi-syllable word can be as hard to render as several short ones, so
+both the word count AND the character count must be met. If an
+extracted idea is wordy in the Generated Content, compress it to its
+essential words rather than quoting a full sentence verbatim —
+compression must preserve meaning, never change what the content
+actually says. When compression would strip the string below something
+recognizable, DROP that string per TEXT DENSITY LIMIT above rather than
+keeping a compressed-but-confusing fragment.
+Word choice: when more than one accurate word could fill a slot, prefer
+the shorter, more common, more everyday word over a longer or more
+technical/formal one — e.g. "sort" over "differentiate," "check" over
+"ascertain," "safe" over "hazard-free" — simpler, more common words are
+rendered correctly more often than rare or multi-syllable ones. Never
+substitute a word that changes the actual meaning; this is a tie-
+breaker between equally accurate options, not license to oversimplify
+the content.
+Numbers: always write a number extracted for this image as a digit
+("3," "24%," "1st"), never spelled out as a word ("three," "twenty-four
+percent," "first") — digits are simpler glyphs and render more reliably
+than the equivalent spelled-out word, and this also naturally keeps the
+string shorter.
+
+If — and only if — a genuine extraction finds the Generated Content and
+Retrieved Context both silent on any real title, heading, number, or
+takeaway (rare for Infographic requests, which are inherently
+structured), fall back to a minimal two-part infographic built from the
+Topic itself as the title plus one heading naming the single concrete
+concept the Topic names — never fabricate multiple invented headings,
+numbers, or statistics to fill space.
+
+Rendering Risk (why care about length/clarity, not whether to include text)
+Image-generation models garble long or complex strings of text far more
+often than short ones — this is a real risk to manage through the
+extraction/tightening step above (short strings, clear typography,
+explicit "spelled exactly as written" instruction below), not a reason
+to omit text altogether. Nothing is composited onto the image afterward
+(title and body copy elsewhere in the app's UI are separate, additional
+text — never a substitute for what's inside the image itself for this
+Content Type), so the literal strings you specify are what actually
+needs to render.
 
 Specificity Requirement (imagery)
 Generic nouns produce generic, low-quality images. Every object, tool,
@@ -526,53 +666,128 @@ by the Generated Content — e.g. "forklift" not "equipment," "steel-toe
 boots" not "protective gear," "warehouse pallet-racking aisle" not
 "workplace." Full rule, industry list, and fallback behavior: see
 Specificity and Setting Selection in SHARED RULES below — this applies
-here exactly as written there.
-
-If the Generated Content is abstract and your extraction step (see
-PIPELINE above) found no concrete steps, facts, or items to structure a
-diagram around, do not invent a plausible-sounding process, comparison,
-or set of steps that the content never described. Instead, structure the
-infographic around whatever single concrete noun the content DOES name
-(even just the Topic itself, treated as one icon/category) rather than
-fabricating multiple invented steps or categories around it.
+here exactly as written there, alongside (not instead of) the literal-
+text requirement above.
 
 The image_prompt should describe:
-- Key facts or steps represented ENTIRELY through icons, bare single-digit
-  numerals ("1", "2", "3") where sequence genuinely matters, color-coding,
-  and position — no word labels, captions, or titles of any kind anywhere
-  in the image, and no empty area reserved for text to be added later
+- LITERAL TEXT CONTENT — for each text element this specific
+  infographic includes (per STEP 1 above, respecting the TEXT DENSITY
+  LIMIT of 5 strings max), state the exact string in quotes and where
+  it sits. Never write "add a title" or "include a heading here" —
+  write, for example: a bold title reading exactly "Safe Lift Steps"
+  centered at the top of the frame, taking up a large portion of the
+  frame's height; a heading below the first icon reading exactly
+  "Check the Load"; a large numeral "1" beside it. Keep any short
+  description or callout to the 2-5 word fragments STEP 1 requires
+  (e.g. "before every lift," not a full sentence) — if there is no
+  short fragment that captures the idea, omit that text element
+  entirely rather than writing a longer one. Every quoted string must
+  be spelled correctly and must be one of the strings extracted and
+  tightened in STEP 1 — never introduce a new word or phrase at this
+  stage that wasn't already checked. Explicitly size each string
+  relative to the canvas (e.g. "the title spans roughly half the
+  frame's width in large bold letters," "each heading is roughly
+  one-third the title's size") so nothing is rendered small or
+  cramped — small, dense text is far more likely to garble than large,
+  sparse text. This is the single most important requirement in this
+  mode; an infographic image_prompt with no literal quoted text in it
+  is not a valid entry.
 - Visual structure (numbered steps, flowchart, comparison columns, icon
-  grid, timeline, before/after panels — whichever fits)
+  grid, timeline, before/after panels, radial/hub-and-spoke — whichever
+  the extracted headings actually call for) that fills the frame as a
+  complete visual, with no blank strip or panel left empty
+- Layout and position: the specific position of every single text block,
+  icon, and diagram element relative to the frame and to each other
+  (e.g. "top-left quadrant," "centered beneath the second icon,"
+  "right-aligned in the bottom banner") so the structure is fully
+  specified, not left to the renderer's default
+- Visual hierarchy and reading order: which text is largest/boldest
+  (normally the title), which is mid-weight (headings/numerals), which
+  is smallest (short descriptions/callouts), and the explicit reading
+  order (e.g. "top to bottom, left to right across three columns" or
+  "clockwise from the top-left icon")
 - Icons or simple flat illustrations representing the SPECIFIC people,
   objects, tools, or actions named in the Generated Content (schematic/
   iconographic, not photorealistic figures, and not generic
   placeholders — e.g. a specific tool or PPE item, not "equipment"),
-  each in bold saturated color with dark outlines
-- Explicit background and card colors with strong, named contrast
-- Layout/composition (grid, flow, hierarchy, whitespace, alignment) that
-  fills the frame as a complete visual, with no blank strip or panel left
-  empty
+  each in bold saturated color with dark outlines, plus any connecting
+  arrows, dividing lines, or numbered sequence markers the layout needs
+- Explicit background and card colors with strong, named contrast —
+  never vague terms like "light," "soft," "minimal," or "clean" on
+  their own. Use explicit pairings, for example: dark charcoal or navy
+  cards on white or light-gray backgrounds; bold saturated icon colors
+  (not pale pastels) outlined in dark strokes
+- Typography: a concrete font style description for the text (e.g.
+  "bold, heavy-weight, wide-set sans-serif lettering for the title;
+  medium-weight sans-serif for headings") so the renderer has a
+  consistent letterform target across all the text. Default to
+  UPPERCASE for the title and any short headings/labels/callouts unless
+  the content specifically reads more naturally in sentence case (e.g.
+  a short description fragment) — uppercase letterforms are simpler and
+  more visually distinct from one another, which measurably reduces
+  render-time confusion between similar-looking letters. Every string
+  must be described as LARGE relative to its text block and clearly
+  legible at a glance — never small, fine-print-sized, or dense; if a
+  text block would need to shrink below a comfortably large size to fit
+  its space, that is a signal to shorten the string (per TEXT DENSITY
+  LIMIT above), not to render it smaller.
+- Spacing: generous whitespace/padding around each text block and icon
+  so nothing crowds a neighboring element or the frame edge (e.g.
+  "generous padding around each card so no text touches the card
+  border," "wide letter-spacing on the title for maximum legibility").
+  Never place multiple short text strings clustered tightly together
+  (a dense legend, a stacked list of many small labels) — each string
+  needs its own clearly separated space on the canvas.
 - Rendering finish of the icons/cards themselves: material and surface
   quality (flat matte fill vs. subtle gradient, soft drop shadow vs. hard
   flat shadow, rounded-corner cards vs. sharp-edged cards, line weight of
   icon strokes), so the visual style is fully specified rather than left
   to the renderer's default
 - Overall tone (professional, corporate, educational, clear)
-- An explicit closing statement that the image contains absolutely no
-  text, letters, words, or symbols anywhere except bare single-digit
-  numerals used for step sequence
+- An explicit closing instruction that every quoted string above must be
+  rendered exactly as written, correctly spelled, in clear, evenly
+  spaced, legible lettering, with no additional or invented text
+  anywhere else in the image beyond what was quoted. Immediately after
+  this instruction, restate the exact spelling of every quoted string
+  used in the prompt one more time as a plain list (e.g. "Text to
+  render, spelled exactly as follows: 'INSPECT', 'REPORT', 'REPAIR'.")
+  — this repetition, right at the end of the prompt closest to where
+  generation happens, reinforces the correct spelling and is a real (if
+  imperfect) lever against the renderer drifting from what was
+  specified earlier in a longer prompt.
+
+Do not, anywhere in an infographic image_prompt, write a placeholder
+instruction like "add relevant text," "include labels," "add a title
+here," or "insert appropriate headings." Every text-shaped instruction
+must already be the literal string, per LITERAL TEXT CONTENT above.
 
 If no style is otherwise indicated by the content, default to: flat
 vector infographic illustration, clean modern corporate design,
 iconographic figures and objects in bold saturated colors with dark
-outlines (not photorealistic), strong color contrast throughout, no text
-of any kind anywhere in the image — steps/categories conveyed only
-through bare single-digit numerals, icons, color, and position (no word
-labels, no captions, no titles, no paragraphs of in-image text, no empty
-area reserved for text), structured layout (steps/flow/diagram/
-comparison as appropriate) that fills the full composition, no
-photorealism, no cinematic lighting, no realistic human faces, no
-washed-out or pastel-on-white color schemes.
+outlines (not photorealistic), strong color contrast throughout, bold
+clean sans-serif typography for every quoted text string, structured
+layout (steps/flow/diagram/comparison as appropriate) that fills the
+full composition, no photorealism, no cinematic lighting, no realistic
+human faces, no washed-out or pastel-on-white color schemes, and no text
+anywhere beyond the specific quoted strings the prompt itself specifies.
+
+Distinctness across the three images (infographic mode specifics)
+The three image_prompts must be three genuinely different ways of
+presenting the SAME underlying information — not the same title/
+headings/layout three times with only color or icon style swapped.
+Typical ways to vary them meaningfully: a different layout structure for
+the same content (e.g. one as a numbered step sequence, one as a
+comparison grid/columns, one as a radial/hub-and-spoke layout around a
+central icon) with the same headings and numbers; or a different
+emphasis/subset (one foregrounds the steps/process, another the
+comparison/before-after, another the single key statistic and takeaway
+as a bold focal element) — still all drawn from the same STEP 1
+extraction, never inventing new facts per image. Keep the SAME title
+wording, the SAME underlying facts/numbers, and the SAME overall color
+palette/typography style across all three so they read as three
+renditions of one infographic. This is in addition to, not a
+replacement for, the general Distinctness rules under OUTPUT FORMAT
+below.
 
 ----------------------------------------------------------
 MODE: concept
@@ -1077,12 +1292,15 @@ SHARED RULES (all modes)
   three draft sentences describing the setting are nearly interchangeable
   word-for-word, rewrite at least one around what's specifically
   different about that moment.
-- Avoid unnecessary in-image text by default: the title and body copy
-  the learner sees already come from the app's own text fields, never
-  from the image, so decorative or incidental text inside an image adds
-  nothing and risks the image model garbling or misspelling it. The only
-  routine exception is a bare single-digit numeral used for step
-  sequence in infographic mode (see that section above).
+- Avoid unnecessary in-image text by default (concept and scene mode
+  only): the title and body copy the learner sees already come from the
+  app's own text fields, never from the image, so decorative or
+  incidental text inside a concept or scene image adds nothing and
+  risks the image model garbling or misspelling it. The only routine
+  exception in those two modes is the REQUIRED TEXT EXCEPTION just
+  below. This rule does NOT apply to infographic mode, which has its
+  own opposite requirement — see STEP 1 — EXTRACT THE LITERAL TEXT under
+  MODE: infographic above.
 - REQUIRED TEXT EXCEPTION: if — and only if — the Generated Content's
   core meaning genuinely depends on a specific, short piece of readable
   text appearing in the image (e.g. a safety sign whose exact wording IS
@@ -1130,7 +1348,7 @@ SHARED RULES (all modes)
 NEGATIVE PROMPT
 =====================================================
 Always produce a negative_prompt that reduces: low quality, blurry, bad
-anatomy, extra fingers, extra limbs, cropped body, watermark, text, logo,
+anatomy, extra fingers, extra limbs, cropped body, watermark, logo,
 distorted faces, unrealistic lighting, duplicate objects, garbled text,
 illegible text, fake digital display, incorrect clock, mirror showing
 face, impossible reflection, impossible geometry, floating objects,
@@ -1138,32 +1356,47 @@ objects at implausible angles, inconsistent perspective, physically
 impossible arrangement, unnatural pose, contradictory body position,
 disconnected limbs, unmotivated debris, unexplained particles,
 inconsistent weather effects.
+Note: the bare term "text" is deliberately NOT in this always-applied
+base list (moved to the concept/scene mode-specific additions below)
+because MODE: infographic now requires literal in-image text — a base
+term banning all text would directly contradict that mode's own
+positive prompt. "garbled text" / "illegible text" above still apply to
+every mode, infographic included: they guard against the renderer
+botching whatever text IS requested, they don't ban text's presence.
 - EXCEPTION when ANY of the three entries uses the REQUIRED TEXT
-  EXCEPTION (PIPELINE above): negative_prompt is ONE shared string used
-  for all three images, not one per entry — there is no way to ban text
-  for two of them while allowing it for the third. So if even one entry
-  needs specific required text, drop the bare "text" term (and, in
-  infographic/concept/scene mode, the mode-specific "words, letters,
-  labels, captions, titles, on-screen text" additions below) from the
-  WHOLE shared negative_prompt for this request, replacing it with
-  "misspelled text, garbled text, illegible text, extra unrelated text,
-  duplicate text, additional signage" instead. This is a deliberate,
-  small trade-off: the other two entries (which don't need text) lose
-  that specific negative-prompt protection too, but each entry's own
-  positive image_prompt still never asks for text on its own, so this is
-  a minor residual risk accepted only in the rare case this exception is
-  actually used — not the default for most requests.
-- When Output Mode is "infographic", also add: text, words, letters,
-  labels, captions, titles, empty reserved area, blank banner, garbled
-  text, fake illegible text, washed-out colors, pastel on white, low
-  contrast, photorealism, photographic lighting, camera bokeh, depth of
-  field, film grain.
+  EXCEPTION (PIPELINE above) in concept or scene mode: negative_prompt
+  is ONE shared string used for all three images, not one per entry —
+  there is no way to ban text for two of them while allowing it for the
+  third. So if even one entry needs specific required text, drop the
+  mode-specific "text, words, letters, labels, captions, titles,
+  on-screen text" additions below from the WHOLE shared negative_prompt
+  for this request, replacing them with "misspelled text, garbled text,
+  illegible text, extra unrelated text, duplicate text, additional
+  signage" instead. This is a deliberate, small trade-off: the other two
+  entries (which don't need text) lose that specific negative-prompt
+  protection too, but each entry's own positive image_prompt still never
+  asks for text on its own, so this is a minor residual risk accepted
+  only in the rare case this exception is actually used — not the
+  default for most requests. This exception does not apply to
+  infographic mode, whose negative_prompt already permits text by
+  default (see below) — it only ever matters for concept/scene.
+- When Output Mode is "infographic", also add: empty reserved area,
+  blank banner, misspelled text, extra unrelated text, duplicate text,
+  additional unrequested signage, fake illegible text, dense paragraph
+  of text, small text, tiny text, cluttered legend, crowded text block,
+  long sentence of body text, washed-out
+  colors, pastel on white, low contrast, photorealism, photographic
+  lighting, camera bokeh, depth of field, film grain. Do NOT add the
+  bare terms "text," "words," "letters," "labels," "captions," or
+  "titles" here — this mode requires those to appear; only ban the
+  failure modes (misspelled/garbled/illegible/duplicate/extra/
+  unrequested text), never the presence of the required text itself.
 - When Output Mode is "concept", also add: multi-panel layout, numbered
   steps, comparison columns, timeline, flowchart, cluttered background,
   busy composition, text, words, letters, labels, captions, titles, long
   paragraphs of text, narrative scene with multiple people.
 - When Output Mode is "scene", also add: icons, flat illustration,
-  diagram, chart, cartoon, clip art, on-screen text, captions, labels,
+  diagram, chart, cartoon, clip art, text, on-screen text, captions, labels,
   titles, illustration, digital painting, concept art, video game render,
   movie poster, anime, painterly, airbrushed, oversaturated,
   hyper-dramatic lighting, lens flare, action movie still, vehicle
@@ -1187,17 +1420,28 @@ careful editor would:
   must be correctly spelled, standard English, and grammatically
   complete — no typos, no dropped articles, no run-on or fragment
   sentences, no duplicated words.
-- Unnecessary text check: confirm none of the three image_prompts asks
-  for any word-based text, title, caption, or label that ISN'T covered
-  by the REQUIRED TEXT EXCEPTION in PIPELINE above. In infographic mode,
-  a bare single-digit numeral is always allowed where sequence genuinely
-  matters. Beyond that, the only other text that belongs in any
-  image_prompt is a specific, quoted, exact string the Generated Content
-  itself requires — and if one of the three includes that, confirm the
-  text is quoted exactly (not paraphrased), kept to a single short
-  word/phrase, and paired with an explicit "spelled exactly as written"
-  instruction. Any other word, phrase, or reserved-but-empty text area
-  in any of the three should be removed.
+- Text check (mode-dependent): for concept and scene mode, confirm none
+  of the three image_prompts asks for any word-based text, title,
+  caption, or label that ISN'T covered by the REQUIRED TEXT EXCEPTION in
+  PIPELINE above — and if one of the three does use that exception,
+  confirm the text is quoted exactly (not paraphrased), kept to a single
+  short word/phrase, and paired with an explicit "spelled exactly as
+  written" instruction; any other word, phrase, or reserved-but-empty
+  text area in a concept/scene prompt should be removed. For infographic
+  mode, confirm the OPPOSITE: every one of the three image_prompts
+  contains at least one literal, exact, quoted string (a title at
+  minimum) per STEP 1 — EXTRACT THE LITERAL TEXT under MODE: infographic
+  above — a prompt with no quoted text, or with only a placeholder
+  instruction like "add a title" or "include labels," fails this check
+  and must be rewritten before responding. Also confirm every quoted
+  infographic string is correctly spelled and within the STEP 1 length
+  targets (title 2-4 words, heading 1-3 words, label 1-2 words, short
+  description 2-4 words as a fragment not a sentence, callout 2-5 words,
+  takeaway 3-6 words), and that the TOTAL count of quoted strings in the
+  entry is 5 or fewer per the TEXT DENSITY LIMIT — an entry with 6+
+  separate text strings, or with a string over its length target, fails
+  and must be trimmed (drop the least essential strings first) rather
+  than shipped as-is.
 - Consistency: names of objects, tools, settings, and the Output Mode
   must be used the same way throughout all three image_prompts,
   alt_text, and tags — no contradicting an earlier detail later in the
@@ -1219,6 +1463,17 @@ careful editor would:
   second distinct aspect — if you used it while a second aspect was
   actually available, rewrite using that aspect instead. All three must
   still clearly depict the SAME underlying content.
+- Content and user prompt alignment (all modes): run the seven-question
+  checklist from CONTENT AND USER PROMPT ALIGNMENT above on every one of
+  the three image_prompts — Topic representation, Generated Content
+  representation, the visual concept connecting both, relevant
+  people/actions, relevant environment/objects, correct Industry, and no
+  unrelated/randomly introduced element. For infographic mode, also
+  confirm every quoted title/heading/label/number/callout/takeaway
+  string is spelled correctly and traceable to the Topic and Generated
+  Content, per STEP 1 — EXTRACT THE LITERAL TEXT under MODE: infographic
+  above — never an invented string. Fix or replace any entry that fails
+  before moving on to Groundedness below.
 - Groundedness (all modes): re-check every one of the three image_prompts
   against your extraction list from PIPELINE above. Every named object,
   action, tool, or setting in each image_prompt must trace back to
@@ -1364,18 +1619,32 @@ the raw JSON object with exactly these five keys:
       specified Output Mode and Content Type, per the rules above — this
       is what gets sent directly to the image generation model, one
       image rendered per prompt. Proofread each of the three per FINAL
-      QUALITY CHECK above before finalizing. Each contains NO text in any
-      mode (infographic included), except a bare single-digit numeral
-      where infographic mode's step-sequence rule allows it.
-      Target roughly 120-180 words — long enough to cover every required
+      QUALITY CHECK above before finalizing. In concept and scene mode,
+      each contains NO text of any kind, except a specific quoted string
+      only when the REQUIRED TEXT EXCEPTION under PIPELINE above applies.
+      In infographic mode, the opposite: each MUST contain the literal,
+      exact quoted text (title at minimum, ideally also headings/labels/
+      numbers/callouts/takeaway) per STEP 1 — EXTRACT THE LITERAL TEXT
+      under MODE: infographic above — never a placeholder instruction
+      like "add a title" in place of the actual words.
+      Target roughly 120-180 words for concept/scene mode, and roughly
+      150-220 words for infographic mode (it runs longer because it
+      must describe layout, icons, typography, and spacing in detail
+      alongside the quoted text) — long enough to cover every required
       element (per mode) with the material/sensory detail the
       Elaboration rule calls for, but not so long that later details
       crowd out or contradict earlier ones, or that the image generation
-      model's prompt window truncates the end. Every added detail must
-      still trace back to something the Generated Content supports or a
-      minor inferred visual detail — elaboration means writing each
-      required element more richly, not adding unrelated new elements
-      just to lengthen the prompt.
+      model's prompt window truncates the end. IMPORTANT: this overall
+      word-count target is for the descriptive PROSE around the text
+      (layout, colors, icons, typography), never license to lengthen or
+      multiply the quoted strings themselves — those stay governed by
+      STEP 1's per-string length caps and the 5-string TEXT DENSITY
+      LIMIT regardless of how long the surrounding prompt paragraph
+      runs. Every added detail must still trace back to something the
+      Generated Content supports or a minor inferred visual detail —
+      elaboration means describing the layout/rendering more richly,
+      not adding more or longer in-image text just to lengthen the
+      prompt.
 
   The three prompts must be genuinely different images, not three near-
   identical restatements of the same sentence — but all three must still

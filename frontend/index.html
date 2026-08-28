@@ -96,6 +96,9 @@ h1 {
 }
 .field textarea { resize: vertical; min-height: 64px; }
 
+.image-settings-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
+.image-settings-row .field { flex: 1 1 140px; min-width: 120px; margin-bottom: 12px; }
+
 .action-row { display: flex; gap: 10px; flex-wrap: wrap; }
 
 .btn {
@@ -138,6 +141,8 @@ h1 {
   white-space: pre-wrap; line-height: 1.55; font-size: 15px;
   border-top: 1px solid var(--paper-rule); padding-top: 16px; margin-top: 12px;
 }
+.content-text p { margin: 0 0 12px 0; }
+.content-text p:last-child { margin-bottom: 0; }
 
 .images {
   display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 20px;
@@ -202,7 +207,7 @@ h1 {
     <div class="header">
       <p class="eyebrow">AI Content Generation</p>
       <h1>Generate learning content + images</h1>
-      <p class="sub">Content Type + Topic in — choose Generate for content only, or Generate + Image for content plus 3 grounded image variations.</p>
+      <p class="sub">Content Type + Topic in — choose Generate for content only, or Generate + Image for content plus your chosen number of grounded image variations.</p>
     </div>
 
     <div class="gen-trigger-row">
@@ -222,6 +227,21 @@ h1 {
       <div class="field">
         <label for="topic">Topic / Prompt</label>
         <textarea id="topic" placeholder="Describe what you want generated, e.g. 'Heat Safety Awareness for warehouse workers during summer months'"></textarea>
+      </div>
+
+      <div class="image-settings-row" id="imageSettingsRow">
+        <div class="field">
+          <label for="imageAspectRatio">Image Size</label>
+          <select id="imageAspectRatio"></select>
+        </div>
+        <div class="field">
+          <label for="imageCount">Image Count</label>
+          <select id="imageCount"></select>
+        </div>
+        <div class="field" id="imageResolutionField">
+          <label for="imageResolution">Resolution</label>
+          <select id="imageResolution"></select>
+        </div>
       </div>
 
       <div class="action-row">
@@ -278,6 +298,35 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
+// The Content Generation Agent's output legitimately uses light markdown
+// (**bold**, numbered/bulleted lines) — that's correct, expected output,
+// not a bug in content generation. This was just never rendered: the
+// content div used .textContent, which shows "**Analyze Close Calls:**"
+// literally instead of as bold. This function does the minimum needed
+// to render that correctly (bold + line breaks), nothing more — no
+// external markdown library, so it's easy to see exactly what's
+// supported and stays completely safe against injected HTML/script from
+// the content itself.
+function renderMarkdownLite(text) {
+  // Escape FIRST, so any literal < > & in the content (or, worse, an
+  // attempted script injection) can never become real HTML — only the
+  // limited patterns below, applied to the now-safe escaped text, ever
+  // introduce real tags.
+  let html = escapeHtml(text || "");
+  // **bold** -> <strong>bold</strong> (non-greedy, so multiple bold
+  // spans on one line don't merge into one)
+  html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  // Blank line -> paragraph break; single newline -> line break. Kept
+  // this simple on purpose — the content is short-form (a card's worth
+  // of text), not long documents needing full markdown (tables, nested
+  // lists, code blocks, etc).
+  html = html
+    .split(/\n{2,}/)
+    .map((para) => para.replace(/\n/g, "<br>"))
+    .join("</p><p>");
+  return `<p>${html}</p>`;
+}
+
 function setStatus(el, message, isError) {
   el.textContent = message || "";
   el.className = "status" + (isError ? " error" : "");
@@ -302,6 +351,96 @@ async function loadContentTypes() {
   } catch (err) {
     select.innerHTML = `<option value="">Could not load content types</option>`;
   }
+}
+
+// Image size/count/resolution used to be fixed server-wide (.env /
+// template.yaml settings) — every request got the same values with no
+// way to differ. They're now per-request choices built from GET
+// /api/image-settings, which reports what the CURRENTLY configured
+// image provider/model actually supports. The Resolution control itself
+// is ALWAYS shown (2K/4K only — 1K is deliberately not offered)
+// regardless of provider/model — an unsupported selection is never
+// rejected, just gracefully dropped by
+// the backend for that one call (see resolution_applies/resolution_note
+// below, shown as a hint rather than used to hide the control). See
+// app/routes/content.py's GET /image-settings and
+// app/schemas/content.py's ImageSettingsResponse.
+let imageSettings = null;
+
+async function loadImageSettings() {
+  const ratioSelect = document.getElementById("imageAspectRatio");
+  const countSelect = document.getElementById("imageCount");
+  const resolutionSelect = document.getElementById("imageResolution");
+  try {
+    imageSettings = await api("/api/image-settings");
+  } catch (err) {
+    // Non-fatal: generation still works with the server's own safe
+    // defaults if these fields are simply omitted from the request (see
+    // GenerateContentRequest.image_aspect_ratio/.image_count/
+    // .image_resolution — all Optional). Fall back to a minimal static
+    // set so the controls aren't just empty/broken.
+    imageSettings = {
+      aspect_ratios: ["1:1", "16:9", "9:16", "4:3", "3:4", "2:3"],
+      resolutions: ["2K", "4K"],
+      resolution_pixels: { "2K": 2048, "4K": 3840 },
+      resolution_applies: true,
+      resolution_note: "",
+      default_aspect_ratio: "1:1",
+      default_resolution: "2K",
+      default_count: 3,
+      min_count: 1,
+      max_count: 3,
+    };
+  }
+
+  ratioSelect.innerHTML = imageSettings.aspect_ratios
+    .map((r) => `<option value="${escapeHtml(r)}"${r === imageSettings.default_aspect_ratio ? " selected" : ""}>${escapeHtml(r)}</option>`)
+    .join("");
+
+  // Capped at 3 — the Image Prompt Agent always produces exactly 3
+  // distinct prompts, so 1/2/3 are the only meaningful choices (see
+  // app/schemas/content.py's IMAGE_COUNT_MIN/MAX).
+  const counts = [];
+  for (let n = imageSettings.min_count; n <= imageSettings.max_count; n++) counts.push(n);
+  countSelect.innerHTML = counts
+    .map((n) => `<option value="${n}"${n === imageSettings.default_count ? " selected" : ""}>${n} image${n === 1 ? "" : "s"}</option>`)
+    .join("");
+
+  // Exactly the two tiers requested, with their pixel counts shown —
+  // "2K (2048px)", "4K (3840px)". Always both, regardless of what the
+  // current provider/model can actually honor (1K is deliberately not
+  // offered at all — see app/schemas/content.py's IMAGE_RESOLUTIONS).
+  const pixels = imageSettings.resolution_pixels || {};
+  resolutionSelect.innerHTML = imageSettings.resolutions
+    .map((r) => {
+      const px = pixels[r];
+      const label = px ? `${r} (${px}px)` : r;
+      return `<option value="${escapeHtml(r)}"${r === imageSettings.default_resolution ? " selected" : ""}>${escapeHtml(label)}</option>`;
+    })
+    .join("");
+  resolutionSelect.title = imageSettings.resolution_applies
+    ? ""
+    : (imageSettings.resolution_note || "Resolution may not be applied by the currently configured image model.");
+}
+
+// Reads the three image-setting controls into the fields
+// GenerateContentRequest expects. Returns {} for any control left at
+// its default-empty value so the backend's own safe defaults apply (see
+// app/schemas/content.py) — never sends an empty string as a "real"
+// value. image_resolution is always read from the (always-visible)
+// control; the backend decides whether the current provider/model can
+// honor it and gracefully drops it with a response warning if not (see
+// GenerateContentResponse.warnings) — the frontend never needs to know
+// that in advance to build a valid request.
+function currentImageSettings() {
+  const settings = {};
+  const ratio = document.getElementById("imageAspectRatio").value;
+  if (ratio) settings.image_aspect_ratio = ratio;
+  const count = document.getElementById("imageCount").value;
+  if (count) settings.image_count = parseInt(count, 10);
+  const resolution = document.getElementById("imageResolution").value;
+  if (resolution) settings.image_resolution = resolution;
+  return settings;
 }
 
 // --- Live progress frames (streaming path — the only generation path now) ---
@@ -391,9 +530,11 @@ async function generateContentStreaming(contentType, topic, generateImages, stat
   const imagesWrap = document.getElementById("images");
   const promptToggle = document.getElementById("imagePromptToggle");
   const promptText = document.getElementById("imagePromptText");
+  const requestedImageSettings = currentImageSettings();
+  const requestedCount = requestedImageSettings.image_count || (imageSettings && imageSettings.default_count) || 3;
   if (generateImages) {
     imagesWrap.hidden = false;
-    renderImageFrames(3); // default count — adjusted if content_ready implies otherwise
+    renderImageFrames(requestedCount); // adjusted again below if the server ends up rendering a different count
   } else {
     imagesWrap.hidden = true;
     imagesWrap.innerHTML = "";
@@ -403,18 +544,18 @@ async function generateContentStreaming(contentType, topic, generateImages, stat
   document.getElementById("resultCard").hidden = false;
   document.getElementById("resultTitle").textContent = contentType;
   document.getElementById("industryBadge").hidden = true;
-  document.getElementById("contentText").textContent = "";
+  document.getElementById("contentText").innerHTML = "";
 
   try {
     const res = await fetch("/api/generate/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+      body: JSON.stringify(Object.assign({
         prompt: topic,
         content_type: contentType,
         industry: null,
         generate_images: generateImages,
-      }),
+      }, generateImages ? requestedImageSettings : {})),
     });
     if (!res.ok || !res.body) {
       const body = await res.json().catch(() => null);
@@ -426,6 +567,7 @@ async function generateContentStreaming(contentType, topic, generateImages, stat
     let finalPayload = null;
     let sawError = null;
     let contentReceived = false;
+    const streamedWarnings = [];
 
     const feed = makeSseParser((eventName, data) => {
       switch (eventName) {
@@ -436,7 +578,7 @@ async function generateContentStreaming(contentType, topic, generateImages, stat
           break;
         case "content_ready":
           contentReceived = true;
-          document.getElementById("contentText").textContent = data.content_text;
+          document.getElementById("contentText").innerHTML = renderMarkdownLite(data.content_text);
           document.getElementById("resultTitle").textContent = contentType;
           const industryBadge = document.getElementById("industryBadge");
           if (data.industry) {
@@ -448,14 +590,23 @@ async function generateContentStreaming(contentType, topic, generateImages, stat
           if (generateImages) {
             promptToggle.hidden = false;
             const anchors = data.content_anchors || [];
-            promptText.textContent = (data.image_prompts || [])
+            // The Image Prompt Agent always produces exactly 3 distinct
+            // prompts server-side (see prompts/image_prompt_system.txt)
+            // and content_ready always carries the full 3 for
+            // traceability/debugging — but only `requestedCount` of them
+            // actually get rendered into real images (see
+            // resolve_prompts_for_count() in app/routes/content.py).
+            // Slicing here so a user who picked "1 image" doesn't see
+            // "Image 1/2/3" listed as if all three were coming.
+            const shownPrompts = (data.image_prompts || []).slice(0, requestedCount);
+            promptText.textContent = shownPrompts
               .map((p, i) => {
                 const anchor = anchors[i];
                 const anchorLine = anchor ? `Represents: "${anchor}"\n` : "";
                 return `Image ${i + 1}:\n${anchorLine}${p}`;
               })
               .join("\n\n");
-            setStatus(statusEl, "Content ready — generating 3 image variations…");
+            setStatus(statusEl, `Content ready — generating ${requestedCount} image variation${requestedCount === 1 ? "" : "s"}…`);
           } else {
             setStatus(statusEl, "Content ready.");
           }
@@ -470,6 +621,7 @@ async function generateContentStreaming(contentType, topic, generateImages, stat
           markFrameFailed(data.index, data.error);
           break;
         case "warning":
+          streamedWarnings.push(data.message);
           setStatus(statusEl, data.message, false);
           break;
         case "done":
@@ -493,7 +645,13 @@ async function generateContentStreaming(contentType, topic, generateImages, stat
       throw err;
     }
     const secs = (performance.now() - startedAt) / 1000;
-    setStatus(statusEl, `Done in ${secs.toFixed(1)}s.`);
+    const responseWarnings = (finalPayload && finalPayload.warnings) || [];
+    const allWarnings = [...new Set([...streamedWarnings, ...responseWarnings])];
+    setStatus(
+      statusEl,
+      allWarnings.length ? `Done in ${secs.toFixed(1)}s. ${allWarnings.join(" ")}` : `Done in ${secs.toFixed(1)}s.`,
+      false,
+    );
     closeGenPanel();
     document.getElementById("resultCard").scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (err) {
@@ -593,6 +751,7 @@ document.getElementById("imagePromptToggle").addEventListener("click", () => {
 });
 
 loadContentTypes();
+loadImageSettings();
 
 // --- Aurora keep-alive ---
 // Aurora Serverless auto-pauses after sitting idle, and waking it back

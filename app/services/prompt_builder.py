@@ -569,6 +569,66 @@ def image_mode_for_content_type(content_type: str) -> str:
     return _CONTENT_TYPE_TO_MODE.get(content_type, "infographic")
 
 
+# Matches a quoted string of at least 2 real word characters, e.g.
+# reading exactly "Check the Load" or 'CAUTION: WET FLOOR'. Used only as
+# a code-level safety net for Infographic requests (see
+# infographic_prompt_has_literal_text() below) — the LLM-side
+# instructions in infographic_image_prompt_system.txt /
+# infographic_image_prompt_validator_system.txt are the primary
+# enforcement; this regex exists so the application doesn't have to
+# trust that compliance blindly.
+_QUOTED_TEXT_RE = re.compile(r"[\"“]([^\"”]{2,})[\"”]|'([A-Za-z][^']{1,})'")
+
+
+def infographic_prompt_has_literal_text(prompt: str) -> bool:
+    """True if `prompt` contains at least one quoted string with real
+    letters in it (a rough proxy for "the exact in-image text is spelled
+    out"), per the literal-text requirement in
+    prompts/image_prompt_system.txt's MODE: infographic section. Used as
+    a code-level check for Content Type = "Infographic" only — every
+    other Content Type never calls this."""
+    if not prompt:
+        return False
+    for match in _QUOTED_TEXT_RE.finditer(prompt):
+        candidate = match.group(1) or match.group(2) or ""
+        if re.search(r"[A-Za-z]{2,}", candidate):
+            return True
+    return False
+
+
+# Companion to infographic_prompt_has_literal_text() above: a rough
+# code-level proxy for the TEXT DENSITY LIMIT in
+# prompts/image_prompt_system.txt's MODE: infographic section (at most 5
+# separate quoted strings per image — more than that measurably
+# increases the renderer's chance of garbling ALL the text, not just the
+# excess strings, per the production issue that limit was added to fix).
+_INFOGRAPHIC_MAX_QUOTED_STRINGS = 5
+
+
+def infographic_prompt_quoted_string_count(prompt: str) -> int:
+    """Count of quoted, letter-containing strings in `prompt` — a rough
+    proxy for how many separate text elements the renderer will attempt
+    to draw. Used only as a code-level density check for Content Type =
+    "Infographic"; see infographic_prompt_is_text_dense() below."""
+    if not prompt:
+        return 0
+    count = 0
+    for match in _QUOTED_TEXT_RE.finditer(prompt):
+        candidate = match.group(1) or match.group(2) or ""
+        if re.search(r"[A-Za-z]{2,}", candidate):
+            count += 1
+    return count
+
+
+def infographic_prompt_is_text_dense(prompt: str) -> bool:
+    """True if `prompt` has more quoted strings than the TEXT DENSITY
+    LIMIT allows — a proxy for the exact garbled-text failure mode seen
+    in production (a busy layout with a title, several headings, several
+    descriptions, and a legend, where the extra text density degraded
+    legibility of ALL the text, not just the excess strings)."""
+    return infographic_prompt_quoted_string_count(prompt) > _INFOGRAPHIC_MAX_QUOTED_STRINGS
+
+
 def pick_daily_tip_focus() -> Tuple[str, str]:
     """Pick one random (kind, name) pair — e.g. ("State", "Rushing") or
     ("Error", "Eyes not on task") — from the 8-item States/Errors
@@ -726,6 +786,7 @@ def build_combined_user_prompt(
     web_results: Optional[str] = None,
     daily_tip_focus: Optional[Tuple[str, str]] = None,
     avoid_repeating: Optional[List[str]] = None,
+    image_count: int = 3,
 ) -> str:
     """User-turn prompt for the merged call — the union of what
     build_content_generation_prompt() and build_image_prompt_request()
@@ -753,7 +814,27 @@ def build_combined_user_prompt(
     )
     if mode not in _VALID_MODES:
         mode = "infographic"
+    if image_count not in (1, 2, 3):
+        image_count = 3
     user_prompt += f"\n\nOutput Mode (for the image-prompt half of your response): {mode}"
+    user_prompt += (
+        f"\nImage Count: {image_count} (produce EXACTLY {image_count} entr"
+        f"{'y' if image_count == 1 else 'ies'} in image_prompts — not always 3; "
+        f"see IMAGE COUNT at the top of the image-prompt system prompt for the full "
+        f"override, including that distinctness-across-the-set rules only apply "
+        f"when Image Count > 1)."
+    )
+    if mode == "infographic":
+        user_prompt += (
+            f"\nMODE REMINDER (infographic): every one of the {image_count} "
+            "image_prompts you write MUST contain the literal, exact "
+            "quoted text meant to appear inside the image (a title at "
+            "minimum, ideally also headings/labels/numbers/callouts/a "
+            "takeaway). Do NOT write a photorealistic scene of a "
+            "person/workplace moment, and do NOT use a placeholder like "
+            "\"add a title\" in place of the actual words. See MODE: "
+            "infographic in the system prompt for the full rules."
+        )
     industry_context = get_industry_visual_context(industry)
     if industry_context:
         user_prompt += f"\n\n{industry_context}"
@@ -790,7 +871,8 @@ def build_content_generation_prompt(
       prompt_builder.pick_industry()) before this prompt was built. This
       is always populated (never invented or swapped mid-request) and is
       the SAME value also sent to the Image Prompt Agent for this
-      request's three images. The content must actually take place in
+      request's images (however many were requested — 1, 2, or 3). The
+      content must actually take place in
       and reflect this industry's realistic day-to-day work, environment,
       or hazards — not merely mention the industry's name once and
       otherwise stay generic. Never invent facts the Retrieved Context
@@ -855,6 +937,8 @@ def build_image_prompt_request(
     context_chunks: List[dict],
     mode: str,
     industry: Optional[str] = None,
+    retry_hint: bool = False,
+    image_count: int = 3,
 ) -> str:
     """Build the user-turn prompt for the Image Prompt Generation Agent.
 
@@ -862,17 +946,95 @@ def build_image_prompt_request(
       request by ContentGenerationEngine.generate() — either explicitly
       given by the caller, or randomly selected via pick_industry() when
       not given. Either way, by the time this function is called it is a
-      concrete, resolved value and is authoritative: all three images
+      concrete, resolved value and is authoritative: every image
       must use it as the professional context/setting, exactly as given.
       It must never be invented, randomly re-picked here, or swapped for
       a different industry just because the content commonly associates
       with another one. It is also the exact same value sent to the
       Content Generation Agent for this request — never a different one.
+
+    retry_hint: True only on the code-level regeneration retry fired by
+      ContentGenerationEngine.generate() when the first attempt's
+      infographic prompts had no literal quoted text (see
+      infographic_prompt_has_literal_text()) — adds an extra, blunt
+      corrective note so the retry isn't just an identical roll of the
+      dice on the same instructions.
+
+    image_count: exactly how many image_prompts the Agent must produce
+      for this request (1, 2, or 3 — see GenerateContentRequest.image_count
+      in app/schemas/content.py). Sent as an explicit "Image Count" field
+      in the user turn, which prompts/image_prompt_system.txt's IMAGE
+      COUNT section (read first, at the very top of that file) treats as
+      authoritative and overrides every place elsewhere in that document
+      that assumes "three". This is the request-time mechanism that
+      makes the Agent actually generate only the requested number of
+      prompts, rather than always drafting 3 and discarding the unused
+      ones after the fact.
     """
     if mode not in _VALID_MODES:
         mode = "infographic"
+    if image_count not in (1, 2, 3):
+        image_count = 3
+    # A short, high-salience mode reminder placed in the USER turn, not
+    # just left buried inside the (very long) system prompt's MODE
+    # sections. Smaller/cheaper models in particular can lose a deeply
+    # nested instruction inside a large system prompt, especially one
+    # surrounded by a lot of scene-mode/State-Error material that isn't
+    # relevant to this request — repeating the one non-negotiable rule
+    # for THIS mode right here, close to where generation happens,
+    # measurably improves compliance without changing what the rule
+    # actually says.
+    if mode == "infographic":
+        mode_reminder = (
+            f"MODE REMINDER (infographic): every one of the {image_count} "
+            "image_prompts you write MUST contain the literal, exact "
+            "quoted text meant to appear inside the image (a title at "
+            "minimum, ideally also headings/labels/numbers/callouts/a "
+            "takeaway) — e.g. a title reading exactly \"...\". Do NOT "
+            "write a photorealistic scene of a person/workplace moment, "
+            "and do NOT use a placeholder like \"add a title\" or "
+            "\"include labels\" in place of the actual words. See "
+            "MODE: infographic in the system prompt for the full rules."
+        )
+    elif mode == "concept":
+        mode_reminder = (
+            "MODE REMINDER (concept): ONE clean object or one person "
+            "mid-action, simple background, no in-image text of any "
+            "kind (unless the REQUIRED TEXT EXCEPTION applies), no "
+            "multi-panel layout, no steps/diagram."
+        )
+    else:
+        mode_reminder = (
+            "MODE REMINDER (scene): ONE photorealistic, cinematic still "
+            "frame — no icons, no diagrams, no in-image text of any kind "
+            "(unless the REQUIRED TEXT EXCEPTION applies)."
+        )
+    if retry_hint and mode == "infographic":
+        mode_reminder += (
+            "\nRETRY NOTE: your previous attempt for this exact request "
+            "was rejected — either it had no literal quoted text, or it "
+            "had TOO MANY separate quoted strings (more than 5 total, "
+            "counting title/headings/labels/descriptions/callout/"
+            "takeaway), which is exactly what causes the renderer to "
+            "garble the text. This time: re-extract a title (and, where "
+            "the content supports it, up to 2-3 short headings, at most "
+            "one short description or callout, and an optional short "
+            "takeaway) from the Topic and Generated Content below, keep "
+            "the TOTAL number of quoted strings to 5 or fewer, keep each "
+            "one short per the length caps, write the exact strings in "
+            "quotes into each image_prompt, and describe a flat "
+            "infographic layout with large, generously spaced text — not "
+            "a photograph of a person or workplace, and not a dense "
+            "layout with many small text blocks."
+        )
     user_prompt = (
-        f"Output Mode: {mode}\n\n"
+        f"Output Mode: {mode}\n"
+        f"{mode_reminder}\n\n"
+        f"Image Count: {image_count}\n"
+        f"(Produce EXACTLY {image_count} entr{'y' if image_count == 1 else 'ies'} in "
+        f"image_prompts — not always 3. See IMAGE COUNT at the very top of the system "
+        f"prompt for the full override this implies, including that distinctness-across-"
+        f"the-set rules only apply when Image Count > 1.)\n\n"
         f"Content Type: {content_type}\n"
         f"Topic: {topic}\n\n"
         f"Generated Content:\n{generated_content}\n\n"
@@ -913,19 +1075,56 @@ def build_image_prompt_validation_request(
     tags: List[str],
     summary: str,
     industry: Optional[str] = None,
+    topic: str = "",
 ) -> str:
     """Build the user-turn prompt for the Image Prompt Validator — the
-    second-pass QA agent that checks the drafting agent's three
-    content_anchor/visual_concept/prompt entries against the Generated
-    Content (see prompts/image_prompt_validator_system.txt for the seven
-    checks) before anything reaches Freepik.
+    second-pass QA agent that checks the drafting agent's N
+    content_anchor/visual_concept/prompt entries against the Topic and
+    the Generated Content (see prompts/image_prompt_validator_system.txt
+    for the thirteen checks, including check M, user prompt alignment)
+    before anything reaches Freepik.
 
-    draft_entries: exactly three dicts, each with keys content_anchor,
-      visual_concept, prompt — the drafting agent's raw output, as parsed
-      by BaseLLMService.generate_image_prompt_package().
+    draft_entries: exactly N dicts (N = however many the drafting agent
+      was asked for — 1, 2, or 3; see build_image_prompt_request()'s
+      image_count param), each with keys content_anchor, visual_concept,
+      prompt — the drafting agent's raw output, as parsed by
+      BaseLLMService.generate_image_prompt_package(). N itself is never
+      passed as a separate parameter here — it's always
+      len(draft_entries), so there's no way for the "Image Count" field
+      sent to the validator to disagree with what it was actually given.
+    topic: the user's original request text, exactly as typed — passed
+      through so the validator can check each draft against the Topic
+      itself, not only against the Generated Content derived from it.
     """
     if mode not in _VALID_MODES:
         mode = "infographic"
+    image_count = len(draft_entries) or 3
+    if mode == "infographic":
+        mode_reminder = (
+            "MODE REMINDER (infographic): check A of your instructions "
+            "is the most important one for this request — each draft "
+            "MUST contain literal, exact quoted text (a title at "
+            "minimum). A draft with no quoted text, or one that reads "
+            "like a photorealistic scene instead of a flat infographic "
+            "layout, is a hard FAIL — rewrite it from scratch, do not "
+            "pass it through."
+        )
+    elif mode == "concept":
+        mode_reminder = (
+            "MODE REMINDER (concept): drafts should have no in-image "
+            "text unless the REQUIRED TEXT EXCEPTION applies."
+        )
+    else:
+        mode_reminder = (
+            "MODE REMINDER (scene): drafts should have no in-image text "
+            "unless the REQUIRED TEXT EXCEPTION applies, and must be "
+            "photorealistic, not iconographic."
+        )
+    mode_reminder += (
+        f"\nIMAGE COUNT: you were given {image_count} draft entr"
+        f"{'y' if image_count == 1 else 'ies'} — return exactly that many, same order. "
+        f"{'Distinctness (check G) does not apply with only one entry.' if image_count == 1 else ''}"
+    ).rstrip()
 
     def _format_entry(i: int, entry: dict) -> str:
         return (
@@ -939,9 +1138,12 @@ def build_image_prompt_validation_request(
 
     user_prompt = (
         f"Output Mode: {mode}\n"
+        f"{mode_reminder}\n\n"
         f"Content Type: {content_type}\n\n"
-        f"Generated Content:\n{generated_content}\n\n"
     )
+    if topic and topic.strip():
+        user_prompt += f"Topic: {topic.strip()}\n\n"
+    user_prompt += f"Generated Content:\n{generated_content}\n\n"
     if industry and industry.strip():
         user_prompt += f"Industry: {industry.strip()}\n\n"
     user_prompt += (
