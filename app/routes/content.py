@@ -3,7 +3,9 @@
 import json
 import logging
 import time
+import uuid
 
+import boto3
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -30,13 +32,74 @@ from app.services.image_generation_service import (
     generate_variations_events,
     resolve_prompts_for_count,
 )
-from app.services.image_storage_service import upload_images_to_s3, upload_single_image_to_s3
+from app.services.image_storage_service import (
+    presigned_url_for,
+    upload_images_to_s3,
+    upload_single_image_to_s3,
+)
 from app.services.knowledge_base_service import KnowledgeBaseError, KnowledgeBaseService
 from app.services.llm_service import get_combined_llm
 from app.services.response_builder import build_response
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# A 1-image request always renders synchronously (see below) and never
+# touches this queue at all — only 2- or 3-image requests go async via
+# SQS, since that's the only case where there's genuine parallel work to
+# hand off instead of doing inline. This keeps the common/fast case
+# (1 image) exactly as fast as a direct Freepik call always was.
+_SQS_IMAGE_COUNT_THRESHOLD = 2
+
+_sqs_client = None
+
+
+def _sqs():
+    global _sqs_client
+    if _sqs_client is None:
+        # No explicit credentials — boto3's default chain handles this via
+        # the Lambda execution role, same pattern as every other boto3
+        # client in this codebase.
+        _sqs_client = boto3.client("sqs", region_name=settings.SQS_REGION)
+    return _sqs_client
+
+
+def _enqueue_image_jobs(
+    request_id: str,
+    prompts: list,
+    negative_prompt: str,
+    aspect_ratio,
+    resolution,
+) -> None:
+    """Send ONE SQS message per entry in `prompts` to ImageGenerationQueue
+    — only called for 2- or 3-image requests (see
+    _SQS_IMAGE_COUNT_THRESHOLD above). Each message already contains the
+    fully-generated image_prompt — app/image_worker.py never regenerates
+    content or image prompts, it only renders what's already here.
+
+    Each message is self-contained: request_id + image_index + everything
+    needed to render and store that ONE image, so the worker never needs
+    to look anything up elsewhere (no DynamoDB, no shared job-tracking
+    state). Concurrent requests from different users never share a
+    request_id (each call mints its own via uuid.uuid4() — see callers),
+    so their messages/S3 keys never collide.
+    """
+    if not settings.IMAGE_QUEUE_URL:
+        raise RuntimeError(
+            "IMAGE_QUEUE_URL is not configured. Set it to the SQS queue URL "
+            "created by template.yaml's ImageGenerationQueue resource."
+        )
+    client = _sqs()
+    for index, prompt in enumerate(prompts):
+        message = {
+            "request_id": request_id,
+            "image_index": index,
+            "image_prompt": prompt,
+            "negative_prompt": negative_prompt or "",
+            "aspect_ratio": aspect_ratio,
+            "resolution": resolution,
+        }
+        client.send_message(QueueUrl=settings.IMAGE_QUEUE_URL, MessageBody=json.dumps(message))
 
 
 def _build_engine() -> ContentGenerationEngine:
@@ -242,26 +305,71 @@ def generate(request: GenerateContentRequest) -> GenerateContentResponse:
     render_anchors = resolve_prompts_for_count(result.get("content_anchors") or [], count)
     result = {**result, "image_prompts": render_prompts, "content_anchors": render_anchors}
 
+    if len(render_prompts) < _SQS_IMAGE_COUNT_THRESHOLD:
+        # Exactly 1 image: render it inline, synchronously — no SQS at
+        # all. There's no parallel work to hand off for a single image,
+        # so a queue round-trip would only add latency here, not reduce
+        # it. This is the same direct-Freepik call this endpoint has
+        # always used.
+        try:
+            images = generate_variations(
+                prompts=render_prompts,
+                negative_prompt=result["negative_prompt"],
+                aspect_ratio=aspect_ratio,
+                resolution=resolution_for_call,
+            )
+        except Exception as exc:
+            logger.error("Image generation failed: %s", exc)
+            raise HTTPException(status_code=502, detail=f"Image generation failed: {exc}")
+
+        try:
+            # Upload to S3 and return short presigned URLs instead of
+            # embedding base64 image bytes in the JSON response — see
+            # app/services/image_storage_service.py for why.
+            image_urls = upload_images_to_s3(images)
+        except Exception as exc:
+            logger.error("Image upload to S3 failed: %s", exc)
+            raise HTTPException(status_code=502, detail=f"Image upload failed: {exc}")
+
+        response = build_response(result, image_urls)
+        response.warnings = warnings
+        return response
+
+    # 2 or 3 images: hand each off to SQS instead of rendering inline —
+    # this is the actual parallelism win, since 2-3 independent Freepik
+    # calls no longer have to complete one after another (or even in
+    # parallel threads within THIS invocation's timeout budget) before
+    # this request can return. Each job already carries its own fully-
+    # generated image_prompt (app/image_worker.py never regenerates
+    # content or prompts, only renders). Presigned URLs are minted BEFORE
+    # the objects exist (see image_storage_service.presigned_url_for()'s
+    # docstring for why this is an ordinary, safe S3 operation) so the
+    # response is still immediately useful, even though the images
+    # themselves aren't ready yet.
+    request_id = uuid.uuid4().hex
     try:
-        images = generate_variations(
+        image_urls = [presigned_url_for(request_id, i) for i in range(len(render_prompts))]
+    except Exception as exc:
+        logger.error("Failed to prepare presigned image URLs: %s", exc)
+        raise HTTPException(status_code=502, detail=f"Failed to prepare image URLs: {exc}")
+
+    try:
+        _enqueue_image_jobs(
+            request_id=request_id,
             prompts=render_prompts,
-            negative_prompt=result["negative_prompt"],
+            negative_prompt=result.get("negative_prompt", ""),
             aspect_ratio=aspect_ratio,
             resolution=resolution_for_call,
         )
     except Exception as exc:
-        logger.error("Image generation failed: %s", exc)
-        raise HTTPException(status_code=502, detail=f"Image generation failed: {exc}")
+        logger.error("Failed to queue image generation jobs: %s", exc)
+        raise HTTPException(status_code=502, detail=f"Failed to queue image generation: {exc}")
 
-    try:
-        # Upload to S3 and return short presigned URLs instead of embedding
-        # base64 image bytes in the JSON response — see
-        # app/services/image_storage_service.py for why.
-        image_urls = upload_images_to_s3(images)
-    except Exception as exc:
-        logger.error("Image upload to S3 failed: %s", exc)
-        raise HTTPException(status_code=502, detail=f"Image upload failed: {exc}")
-
+    warnings.append(
+        f"{len(render_prompts)} image(s) are processing in the background (request_id={request_id}). "
+        "The URLs above will resolve as each one finishes — this can take a couple of minutes; "
+        "retry loading an image if it doesn't appear immediately."
+    )
     response = build_response(result, image_urls)
     response.warnings = warnings
     return response
@@ -444,47 +552,96 @@ def generate_stream(request: GenerateContentRequest):
             render_anchors = resolve_prompts_for_count(result.get("content_anchors") or [], requested_count)
             result = {**result, "image_prompts": render_prompts, "content_anchors": render_anchors}
 
-            generation_id = None
-            image_urls: dict = {}
-            count = len(render_prompts)
+            if len(render_prompts) < _SQS_IMAGE_COUNT_THRESHOLD:
+                # Exactly 1 image: render it inline with real-time
+                # progress events, same as always — no SQS, no queueing
+                # delay, since there's no parallel work to hand off for
+                # a single image.
+                generation_id = None
+                image_urls: dict = {}
+                count = len(render_prompts)
+                try:
+                    for event in generate_variations_events(
+                        prompts=render_prompts,
+                        negative_prompt=result.get("negative_prompt", ""),
+                        deadline_seconds=image_deadline,
+                        aspect_ratio=aspect_ratio,
+                        resolution=resolution_for_call,
+                    ):
+                        if event["type"] == "progress":
+                            yield _sse("image_progress", {
+                                "index": event["index"], "status": event["status"], "detail": event["detail"],
+                            })
+                        elif event["type"] == "image":
+                            if generation_id is None:
+                                generation_id = uuid.uuid4().hex
+                            try:
+                                url = upload_single_image_to_s3(event["bytes"], generation_id, event["index"])
+                                image_urls[event["index"]] = url
+                                yield _sse("image_ready", {"index": event["index"], "url": url})
+                            except Exception as exc:  # noqa: BLE001
+                                yield _sse("image_failed", {"index": event["index"], "error": f"Upload failed: {exc}"})
+                        elif event["type"] == "failed":
+                            yield _sse("image_failed", {"index": event["index"], "error": event["error"]})
+                except Exception as exc:  # noqa: BLE001 - image phase failed outright
+                    yield _sse("error", {"message": f"Image generation failed: {exc}"})
+                    return
+
+                if not image_urls:
+                    yield _sse("error", {"message": "All image variations failed."})
+                    return
+                if len(image_urls) < count:
+                    yield _sse("warning", {
+                        "message": f"Only {len(image_urls)}/{count} image variation(s) succeeded.",
+                    })
+
+                ordered_urls = [image_urls[i] for i in sorted(image_urls)]
+                response = build_response(result, ordered_urls)
+                response.warnings = stream_warnings
+                yield _sse("done", response.model_dump())
+                return
+
+            # 2 or 3 images: enqueue via SQS and return immediately —
+            # this Lambda never waits for Freepik across multiple images
+            # in series or even in parallel-within-this-invocation; each
+            # job is picked up by a SEPARATE invocation of this same
+            # function (see app/main.py's handler / app/image_worker.py),
+            # running concurrently with the others (see template.yaml's
+            # ScalingConfig.MaximumConcurrency on the SQS event source).
+            request_id = uuid.uuid4().hex
             try:
-                for event in generate_variations_events(
+                image_urls_list = [presigned_url_for(request_id, i) for i in range(len(render_prompts))]
+            except Exception as exc:  # noqa: BLE001
+                yield _sse("error", {"message": f"Failed to prepare image URLs: {exc}"})
+                return
+
+            try:
+                _enqueue_image_jobs(
+                    request_id=request_id,
                     prompts=render_prompts,
                     negative_prompt=result.get("negative_prompt", ""),
-                    deadline_seconds=image_deadline,
                     aspect_ratio=aspect_ratio,
                     resolution=resolution_for_call,
-                ):
-                    if event["type"] == "progress":
-                        yield _sse("image_progress", {
-                            "index": event["index"], "status": event["status"], "detail": event["detail"],
-                        })
-                    elif event["type"] == "image":
-                        if generation_id is None:
-                            import uuid as _uuid
-                            generation_id = _uuid.uuid4().hex
-                        try:
-                            url = upload_single_image_to_s3(event["bytes"], generation_id, event["index"])
-                            image_urls[event["index"]] = url
-                            yield _sse("image_ready", {"index": event["index"], "url": url})
-                        except Exception as exc:  # noqa: BLE001
-                            yield _sse("image_failed", {"index": event["index"], "error": f"Upload failed: {exc}"})
-                    elif event["type"] == "failed":
-                        yield _sse("image_failed", {"index": event["index"], "error": event["error"]})
-            except Exception as exc:  # noqa: BLE001 - image phase failed outright
-                yield _sse("error", {"message": f"Image generation failed: {exc}"})
+                )
+            except Exception as exc:  # noqa: BLE001
+                yield _sse("error", {"message": f"Failed to queue image generation: {exc}"})
                 return
 
-            if not image_urls:
-                yield _sse("error", {"message": "All image variations failed."})
-                return
-            if len(image_urls) < count:
-                yield _sse("warning", {
-                    "message": f"Only {len(image_urls)}/{count} image variation(s) succeeded.",
-                })
+            # "image_processing" (not "image_queued"/"image_ready") is
+            # deliberate wording: the frontend must represent this as
+            # PROCESSING, never as a failure, no matter how long the
+            # actual render takes — there is no real completion signal
+            # available on this stream once these jobs are handed off
+            # (no job-tracking/status system was added), so the frontend
+            # polls the presigned URL itself and simply keeps showing
+            # "processing" until it resolves.
+            for i, url in enumerate(image_urls_list):
+                yield _sse("image_processing", {"index": i, "url": url})
 
-            ordered_urls = [image_urls[i] for i in sorted(image_urls)]
-            response = build_response(result, ordered_urls)
+            stream_warnings.append(
+                f"{len(render_prompts)} image(s) are processing in the background (request_id={request_id})."
+            )
+            response = build_response(result, image_urls_list)
             response.warnings = stream_warnings
             yield _sse("done", response.model_dump())
 

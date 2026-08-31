@@ -110,50 +110,21 @@ Parameters:
       value plus roughly 30-40s of margin is what that Timeout should be
       set to. 170s leaves real margin over Mystic's documented ~90-130s
       typical latency; the previous 120s default did not.
-  # --- Image Generation Queue (SQS) ---
-  # See ImageGenerationQueue/ImageGenerationDLQ below.
-  # ContentGenerationFunction both SENDS to the queue (after its
-  # existing, unchanged image-prompt-generation step) AND consumes from
-  # it (via the ImageQueueEvent SQS event source on that same function
-  # — see app/main.py's handler, which routes SQS-shaped invocations to
-  # app/worker.py instead of through Mangum/FastAPI). There is no
-  # separate worker Lambda — merged into one function by explicit
-  # choice; content generation itself still never touches SQS.
-  ImageWorkerReservedConcurrency:
-    Type: Number
-    Default: -1
-    Description: >
-      Max simultaneous ContentGenerationFunction invocations across ALL
-      requests/users combined, covering BOTH API-serving traffic AND
-      SQS-triggered image jobs together (they're the same function post-
-      merge) — this is now the real lever for "how many requests hit
-      Freepik at once," but setting it also caps total API throughput,
-      not just image generation. Default -1 means "no reservation" (this
-      Parameter's value is ignored via the HasReservedConcurrency
-      Condition below, and ReservedConcurrentExecutions is omitted
-      entirely), preserving this function's original unconstrained API
-      behavior. Set to a non-negative number to opt into a hard cap —
-      with BatchSize 1 (one image per invocation) on the image side,
-      that number becomes the system-wide concurrent-Freepik-calls
-      ceiling too. Independent from FreepikMaxConcurrentSubmissions
-      above, which only throttles the fast SUBMIT step within a single
-      invocation (now always 1 image per invocation, so that cap is
-      effectively moot here). Must stay within your account's Lambda
-      concurrency limit (default 1000) or the deploy fails.
+  # --- Image Generation Queue (SQS) — only used for 2-3 image requests ---
+  # ContentGenerationFunction both SENDS to this queue (after its
+  # existing, unchanged image-prompt-generation step, when image_count
+  # is 2 or 3) AND consumes from it (via its own ImageQueueEvent SQS
+  # trigger — see that resource's Events block). There is no separate
+  # worker Lambda; a 1-image request never touches this queue at all.
   ImageQueueVisibilityTimeoutSeconds:
     Type: Number
     Default: 1260
     Description: >
-      Must exceed ContentGenerationFunction's own Timeout (below,
-      overridden to 210 to cover SQS-triggered image jobs: 170s Freepik
-      poll timeout + ~40s margin for the submit step, image download,
-      and S3 upload) with margin — otherwise SQS could redeliver a
-      message to a second invocation while the first is still
-      legitimately running, causing the same image to render twice.
-      AWS's own guidance is >=6x the function timeout; 1260s (21 min) is
-      exactly 6x a 210s timeout (the previous 900s default was only ~5x
-      the previous 180s timeout, short of that guidance — corrected
-      here alongside the timeout increase below).
+      Must exceed ContentGenerationFunction's own Timeout (below) with
+      margin — otherwise SQS could redeliver a message to a second
+      invocation while the first is still legitimately running, causing
+      the same image to render twice. AWS's own guidance is >=6x the
+      function timeout; 1260s (21 min) is exactly 6x a 210s timeout.
   ImageQueueMaxReceiveCount:
     Type: Number
     Default: 3
@@ -161,10 +132,23 @@ Parameters:
       How many times SQS redelivers a failing message to
       ContentGenerationFunction (via its ImageQueueEvent SQS trigger)
       before giving up and routing it to ImageGenerationDLQ instead.
-      Below this count, a transient Freepik error just gets a free
-      automatic retry; at/above it, the job stops being retried and
-      needs manual attention (inspect ImageGenerationDLQ) — this is the
-      queue's OWN built-in retry mechanism, not an application-level one.
+      This is the queue's OWN built-in retry mechanism, not an
+      application-level one.
+  ImageQueueMaximumConcurrency:
+    Type: Number
+    Default: 6
+    Description: >
+      Max simultaneous Lambda invocations triggered BY THIS QUEUE
+      specifically — this is the real "how many requests hit Freepik at
+      once, safely" control, and it is deliberately scoped to the queue
+      alone (via the SQS event source's own ScalingConfig), NOT to
+      ContentGenerationFunction's overall concurrency. That means image
+      jobs queueing up under load can never throttle or compete with
+      normal API-serving traffic — the two are independent pools. AWS
+      requires this value to be between 2 and 1000 for SQS event
+      sources. 6 is a starting point sized for typical shared-account
+      Lambda concurrency limits (default 1000 account-wide) — raise it
+      if you expect sustained high multi-image traffic.
   DeploymentPreferenceType:
     Type: String
     Default: Canary10Percent5Minutes
@@ -188,17 +172,6 @@ Parameters:
       Canary10Percent5Minutes — see README's "Lambda Versioning &
       Rollback" section for the full A-vs-B rationale.
 
-Conditions:
-  # -1 (ImageWorkerReservedConcurrency's default) means "don't set
-  # ReservedConcurrentExecutions at all" — CloudFormation has no concept
-  # of "unset" for a Number parameter, so -1 is used as the sentinel and
-  # this Condition + the Fn::If on ContentGenerationFunction's
-  # ReservedConcurrentExecutions property (below) turn that sentinel
-  # into actually omitting the property (via !Ref AWS::NoValue) rather
-  # than passing -1 through to Lambda, which would be a real (invalid)
-  # value.
-  HasReservedConcurrency: !Not [!Equals [!Ref ImageWorkerReservedConcurrency, -1]]
-
 Resources:
   ContentGenerationApi:
     Type: AWS::Serverless::HttpApi
@@ -221,43 +194,55 @@ Resources:
 
   # Dead-letter queue for ImageGenerationQueue below — a message lands
   # here only after ContentGenerationFunction (via its ImageQueueEvent
-  # SQS trigger) has failed to process it
-  # ImageQueueMaxReceiveCount times. Nothing consumes this
-  # automatically (no DynamoDB/job-tracking/alerting was added per the
-  # explicit scope of this feature) — it exists purely so failed jobs
-  # aren't silently retried forever or silently dropped; inspect it
-  # manually (or point your own external tooling at it) to find and
-  # re-drive/investigate failed image jobs.
-  #
-  # QueueName is explicit (not left to CloudFormation's auto-generated
-  # "{stack-name}-ImageGenerationDLQ-XXXXX" default) purely so the AWS
-  # Console/CLI show the exact name "ImageGenerationDLQ" rather than a
-  # generated string — the application never reads this name (it only
-  # ever uses the Queue URL/ARN, both unaffected by this). Trade-off:
-  # an explicit name is a physical resource name, so it must be unique
-  # per AWS account+region — you can only deploy ONE stack using this
-  # template into a given account+region at a time (e.g. this rules out
-  # separate "staging" and "prod" stacks in the same account+region
-  # unless you either override this Parameter's default per-environment
-  # or drop back to the auto-generated name). Not an issue for a single
-  # deployment target.
+  # SQS trigger) has failed to process it ImageQueueMaxReceiveCount
+  # times. Nothing consumes this automatically (no DynamoDB/job-tracking/
+  # alerting was added, per explicit scope) — it exists purely so failed
+  # jobs aren't silently retried forever or silently dropped; inspect it
+  # manually to find and investigate failed image jobs.
   ImageGenerationDLQ:
     Type: AWS::SQS::Queue
     Properties:
       QueueName: ImageGenerationDLQ
-      MessageRetentionPeriod: 1209600   # 14 days (SQS max) — generous window to notice and act on failures
+      MessageRetentionPeriod: 1209600   # 14 days (SQS max)
 
-  # One message per requested image (see app/routes/content.py's
-  # _enqueue_image_jobs(), called only from the generate_images=True
-  # branch of /generate and /generate/stream, AFTER the existing
-  # image-prompt-generation step has already produced the prompts).
-  # ContentGenerationFunction (via its ImageQueueEvent SQS trigger — see
-  # that resource's Events block) is the sole consumer; there is no
-  # separate worker Lambda.
+  # Only used for 2- or 3-image requests (see app/routes/content.py's
+  # _enqueue_image_jobs() — a 1-image request always renders inline and
+  # never touches this queue). One message per requested image, each
+  # already carrying its fully-generated image_prompt.
+  # ContentGenerationFunction (the SAME Lambda that serves API Gateway —
+  # see its ImageQueueEvent SQS trigger in its Events block) is the sole
+  # consumer. There is NO separate worker Lambda.
   #
-  # QueueName explicit for the same reason as ImageGenerationDLQ above
-  # — same per-account+region uniqueness trade-off applies here too.
-  ImageGenerationQueue:
+  # Logical ID is ImageGenerationQueueV3 (bumped again from V2) —
+  # deliberately, not a typo, and not just cosmetic. Each rename forces
+  # CloudFormation to treat this as a brand-new resource to CREATE from
+  # scratch rather than reconcile against a stale tracked reference —
+  # same technique used for the stuck EventSourceMapping earlier.
+  #
+  # IMPORTANT — this rename alone is NOT sufficient this time: unlike
+  # the V1->V2 rename (where the physical queue was simply gone and the
+  # name was free), a queue named "ImageGenerationQueue" and a DLQ named
+  # "ImageGenerationDLQ" were manually created via the AWS CLI as a
+  # stopgap (along with a manually-created EventSourceMapping directly
+  # attached to the Lambda, bypassing CloudFormation entirely). SQS
+  # queue names must be unique per account+region — CloudFormation's
+  # CREATE for a queue with the SAME physical QueueName will fail with
+  # "QueueAlreadyExists" if those manually-created resources still
+  # exist when this deploys. Before deploying this template:
+  #   1. Delete the manually-created EventSourceMapping:
+  #      aws lambda delete-event-source-mapping --uuid <uuid>
+  #   2. Delete both manually-created queues:
+  #      aws sqs delete-queue --queue-url <ImageGenerationQueue URL>
+  #      aws sqs delete-queue --queue-url <ImageGenerationDLQ URL>
+  #   3. (Optional cleanup) Remove the manual IAM inline policy added
+  #      earlier: aws iam delete-role-policy --role-name <role>
+  #      --policy-name ManualImageQueueConsumePolicy — CloudFormation's
+  #      own Policies below already grant what's needed; the manual one
+  #      becomes redundant once this deploys successfully.
+  # Only THEN will CloudFormation's CREATE for both queues under this
+  # new logical ID succeed cleanly. QueueName itself is unchanged —
+  # "ImageGenerationQueue" is still the physical name once recreated.
+  ImageGenerationQueueV3:
     Type: AWS::SQS::Queue
     Properties:
       QueueName: ImageGenerationQueue
@@ -301,31 +286,17 @@ Resources:
       Handler: app.main.handler
       CodeUri: .
       # Overrides Globals.Function.Timeout (120) — this function now
-      # ALSO handles SQS-triggered image-generation invocations (see
-      # app/main.py's handler and app/worker.py). 210s = 170s
-      # FreepikPollTimeoutSeconds (below) + ~40s margin for the submit
+      # ALSO handles SQS-triggered image jobs for 2-3 image requests
+      # (see app/main.py's handler and app/image_worker.py). 210s =
+      # 170s FreepikPollTimeoutSeconds + ~40s margin for the submit
       # step, image download, and S3 upload that happen after Freepik
-      # itself finishes. Was 180s with a 120s poll timeout — that only
-      # left 60s of margin but, more importantly, 120s sat INSIDE
-      # Mystic's documented ~90-130s real-world latency range rather
-      # than safely above it, so a meaningful share of legitimate,
-      # successful renders were being cut off by the POLL timeout
-      # (raising a clean error well before this Lambda Timeout was ever
-      # reached) and reported as failures. API Gateway HTTP API itself
-      # caps integration wait time at ~30s regardless of this value, so
-      # this only actually extends how long an SQS-triggered invocation
-      # of this SAME function is allowed to run — the API path's
-      # effective ceiling is unchanged.
+      # itself finishes. API Gateway HTTP API itself caps integration
+      # wait time at ~30s regardless of this value, so this only
+      # actually extends how long an SQS-triggered invocation of this
+      # SAME function is allowed to run — the API path's effective
+      # ceiling (and the 1-image synchronous path, which returns well
+      # under 30s in practice) is unchanged.
       Timeout: 210
-      # See ImageWorkerReservedConcurrency's description in Parameters
-      # above for what this now covers post-merge: BOTH API-serving
-      # traffic and SQS-triggered image jobs share this one pool, since
-      # they're the same function. Defaults to -1 (no reservation, i.e.
-      # unbounded up to your account's concurrency limit) to preserve
-      # this function's original unconstrained API behavior — set it
-      # explicitly if you want a hard cap protecting Freepik, understanding
-      # that the same cap also then limits total API throughput.
-      ReservedConcurrentExecutions: !If [HasReservedConcurrency, !Ref ImageWorkerReservedConcurrency, !Ref "AWS::NoValue"]
       # Every `sam deploy` that changes code or configuration now
       # publishes a new IMMUTABLE Lambda version (1, 2, 3, ...) and keeps
       # the "prod" alias — not $LATEST — as the stable pointer production
@@ -334,10 +305,9 @@ Resources:
       # "content_generation:prod" instead of the bare function/$LATEST,
       # and manages the matching Lambda resource-based invoke permission
       # for API Gateway — no manual Api/integration changes needed, and
-      # the existing API Gateway URL/routes/CORS are unaffected. SAM also
-      # points the new ImageQueueEvent's event source mapping (below) at
-      # this same "prod" alias, so an in-progress canary/linear rollout
-      # applies consistently to both triggers of this one function.
+      # the existing API Gateway URL/routes/CORS are unaffected. SAM
+      # also points the new ImageQueueEvent's event source mapping
+      # (below) at this same "prod" alias.
       AutoPublishAlias: prod
       DeploymentPreference:
         Type: !Ref DeploymentPreferenceType
@@ -362,13 +332,14 @@ Resources:
           FREEPIK_POLL_TIMEOUT: !Ref FreepikPollTimeoutSeconds
           GENERATED_IMAGES_BUCKET: !Ref GeneratedImagesBucket
           # Used both to SEND (app/routes/content.py's
-          # _enqueue_image_jobs(), from the API-serving side of this
-          # function) and, indirectly, to RECEIVE (the ImageQueueEvent
-          # source mapping below feeds SQS-shaped events into this same
-          # function's app.main.handler, which routes them to
-          # app/worker.py — that path never reads this URL directly,
-          # it just processes whatever record SQS already delivered).
-          IMAGE_QUEUE_URL: !Ref ImageGenerationQueue
+          # _enqueue_image_jobs(), for 2-3 image requests only, from the
+          # API-serving side of this function) and, indirectly, to
+          # RECEIVE (the ImageQueueEvent source mapping below feeds
+          # SQS-shaped events into this same function's app.main.handler,
+          # which routes them to app/image_worker.py — that path never
+          # reads this URL directly, it just processes whatever record
+          # SQS already delivered).
+          IMAGE_QUEUE_URL: !Ref ImageGenerationQueueV3
       Policies:
         - Statement:
             - Effect: Allow
@@ -386,13 +357,13 @@ Resources:
                 - s3:GetObject
               Resource: !Sub "${GeneratedImagesBucket.Arn}/*"
             - Effect: Allow
-              # SendMessage for the API-serving side (queuing new image
+              # SendMessage for the API-serving side (queuing 2-3 image
               # jobs); Receive/Delete/GetQueueAttributes for the
               # SQS-triggered side are auto-granted by the ImageQueueEvent
               # source below (SAM's Type: SQS event) — not duplicated here.
               Action:
                 - sqs:SendMessage
-              Resource: !GetAtt ImageGenerationQueue.Arn
+              Resource: !GetAtt ImageGenerationQueueV3.Arn
       Events:
         ApiEvent:
           Type: HttpApi
@@ -408,37 +379,16 @@ Resources:
             ApiId: !Ref ContentGenerationApi
             Path: /
             Method: GET
-        # Merged onto this SAME function (not a separate
-        # a separate ImageWorkerFunction — see app/main.py's handler docstring for
-        # why and the concurrency trade-off this implies). SQS-shaped
-        # invocations get routed by app/main.py's handler to
-        # app/worker.py instead of through Mangum/FastAPI.
-        #
-        # Named ImageQueueEventV2 (not ImageQueueEvent) DELIBERATELY —
-        # this is a rename, not just a version bump. Renaming a nested
-        # resource's logical ID forces CloudFormation to treat it as an
-        # entirely new resource: DELETE the old EventSourceMapping
-        # (logical ID ImageQueueEvent) and CREATE a brand new one fresh,
-        # bound to whatever ImageGenerationQueue.Arn and the "prod" alias
-        # actually resolve to AT THIS DEPLOY. This was done to eliminate
-        # a real, confirmed-in-production mystery: CloudFormation
-        # reported the OLD EventSourceMapping as CREATE_COMPLETE /
-        # UPDATE_COMPLETE, yet the queue's own "Lambda triggers" tab
-        # showed no consumer and the worker never actually ran for any
-        # queued job (verified via CloudWatch Logs — zero matches for a
-        # real request_id across every log stream). The most likely
-        # explanation is a stale binding left over from the queue being
-        # replaced earlier when QueueName was added (SQS queue rename ->
-        # new physical ARN) and/or the ImageWorkerFunction -> merged-
-        # into-ContentGenerationFunction transition — either way, this
-        # forces a guaranteed-clean rebind in a single deploy rather than
-        # requiring more AWS-console archaeology to find which exact
-        # historical deploy left it stale. If you ever need to do this
-        # again for the same reason, bump the suffix again (V3, V4, ...).
-        ImageQueueEventV2:
+        # Fires ONLY for 2-3 image requests (see
+        # app/routes/content.py's _SQS_IMAGE_COUNT_THRESHOLD) — this is
+        # the SAME Lambda that serves API Gateway, not a separate
+        # function; SQS-shaped invocations get routed by
+        # app/main.py's handler to app/image_worker.py instead of
+        # through Mangum/FastAPI.
+        ImageQueueEvent:
           Type: SQS
           Properties:
-            Queue: !GetAtt ImageGenerationQueue.Arn
+            Queue: !GetAtt ImageGenerationQueueV3.Arn
             # Each image is an independent generation job with its own
             # Freepik call and S3 write — batching multiple images into
             # one invocation would mean one slow/failing image blocks or
@@ -449,6 +399,16 @@ Resources:
             # explicit sqs:SendMessage statement above is still needed;
             # that one isn't auto-granted by this event).
             BatchSize: 1
+            # This is what actually lets multiple queued image jobs
+            # invoke this SAME function concurrently rather than one
+            # after another, WITHOUT touching the function's overall
+            # concurrency (unlike an earlier version of this
+            # architecture, which used ReservedConcurrentExecutions on
+            # the whole function and therefore also throttled normal API
+            # traffic). This cap applies only to invocations triggered
+            # BY THIS QUEUE.
+            ScalingConfig:
+              MaximumConcurrency: !Ref ImageQueueMaximumConcurrency
 
 Outputs:
   ApiUrl:
@@ -469,10 +429,10 @@ Outputs:
     Description: S3 bucket storing generated images
     Value: !Ref GeneratedImagesBucket
   ImageGenerationQueueUrl:
-    Description: SQS queue URL for image-generation jobs
-    Value: !Ref ImageGenerationQueue
+    Description: SQS queue URL for 2-3 image-count requests
+    Value: !Ref ImageGenerationQueueV3
   ImageGenerationQueueArn:
-    Value: !GetAtt ImageGenerationQueue.Arn
+    Value: !GetAtt ImageGenerationQueueV3.Arn
   ImageGenerationDLQUrl:
     Description: Dead-letter queue — inspect for image jobs that failed maxReceiveCount times
     Value: !Ref ImageGenerationDLQ

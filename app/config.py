@@ -200,6 +200,18 @@ class Settings:
     S3_REGION: str = os.getenv("S3_REGION", os.getenv("AWS_REGION", "us-east-1"))
     S3_PRESIGNED_URL_EXPIRY: int = int(os.getenv("S3_PRESIGNED_URL_EXPIRY", "3600"))
 
+    # --- Image Generation Queue (SQS) ---
+    # Only used when image_count is 2 or 3 (see app/routes/content.py) —
+    # a 1-image request always goes straight to Freepik synchronously,
+    # never touching this queue at all. Set by template.yaml to
+    # ImageGenerationQueue's URL. The SAME Lambda (content_generation)
+    # both sends to this queue (from the API-serving request) and
+    # consumes from it (via the SQS event source in template.yaml,
+    # routed by app/main.py's handler to app/image_worker.py) — no
+    # separate worker Lambda exists.
+    IMAGE_QUEUE_URL: str = os.getenv("IMAGE_QUEUE_URL", "")
+    SQS_REGION: str = os.getenv("SQS_REGION", os.getenv("AWS_REGION", "us-east-1"))
+
     # --- Streaming endpoint (/api/generate/stream) timing budget ---
     # The whole request — KB retrieval + combined LLM call + N parallel
     # image renders + S3 uploads — is budgeted to finish comfortably

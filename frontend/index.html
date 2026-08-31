@@ -490,6 +490,62 @@ function markFrameFailed(index, errorMessage) {
   `;
 }
 
+// For 2-3 image requests (see app/routes/content.py — a 1-image request
+// always uses the real-time image_progress/image_ready/image_failed
+// events above instead). The URL handed back here is REAL (a valid
+// presigned S3 GET URL) but the object behind it may not exist yet — a
+// SEPARATE invocation of the same Lambda, triggered by SQS, renders it
+// concurrently with the others. Rather than declaring failure after some
+// arbitrary elapsed time, this represents the image as PROCESSING
+// indefinitely until it actually resolves — a slow Freepik response is
+// not a failure, and there is no reliable way to distinguish "still
+// genuinely working" from "failed and quietly waiting to retry" from the
+// client alone (no job-tracking system exists, by design). Only a real,
+// explicit error from the stream itself (see the "error" case below)
+// shows this as failed.
+const IMAGE_POLL_INTERVAL_MS = 5000;
+
+function markFrameProcessing(index, url) {
+  const frame = document.getElementById(`frame-${index}`);
+  if (!frame) return;
+  frame.innerHTML = `
+    <span class="image-card-label">Option ${index + 1}</span>
+    <div class="frame-spinner"></div>
+    <div class="frame-status" id="frame-status-${index}">Processing…</div>
+  `;
+  pollForImage(index, url, 0);
+}
+
+function pollForImage(index, url, attempt) {
+  const frame = document.getElementById(`frame-${index}`);
+  if (!frame) return; // user navigated away / regenerated before this resolved
+  // NOTE: this must be a GET, not HEAD — the URL is presigned for the
+  // "get_object" S3 action specifically, and that signature is only
+  // valid for the method it was signed for. A 1-byte Range request
+  // keeps this cheap while still using GET.
+  fetch(url, { method: "GET", headers: { Range: "bytes=0-0" } })
+    .then((res) => {
+      if (res.ok) { // 200 or 206 (partial content) both mean the object exists
+        markFrameReady(index, url);
+        return;
+      }
+      throw new Error(`not ready (status ${res.status})`);
+    })
+    .catch(() => {
+      // Deliberately no give-up/failure branch here — see the comment
+      // above markFrameProcessing(). This keeps polling, gently updating
+      // the message so it's clear the page hasn't frozen, for as long as
+      // the tab stays open.
+      const statusEl = document.getElementById(`frame-status-${index}`);
+      if (statusEl) {
+        statusEl.textContent = attempt > 4
+          ? "Still processing — this can take a couple of minutes for multiple images"
+          : "Processing…";
+      }
+      setTimeout(() => pollForImage(index, url, attempt + 1), IMAGE_POLL_INTERVAL_MS);
+    });
+}
+
 // Parses a raw SSE text stream (fetch + ReadableStream, not the native
 // EventSource — EventSource can't send a POST body, and this endpoint
 // needs one) into { event, data } pairs. SSE frames are separated by a
@@ -606,7 +662,12 @@ async function generateContentStreaming(contentType, topic, generateImages, stat
                 return `Image ${i + 1}:\n${anchorLine}${p}`;
               })
               .join("\n\n");
-            setStatus(statusEl, `Content ready — generating ${requestedCount} image variation${requestedCount === 1 ? "" : "s"}…`);
+            setStatus(
+              statusEl,
+              requestedCount === 1
+                ? "Content ready — generating 1 image…"
+                : `Content ready — ${requestedCount} images are processing in the background…`
+            );
           } else {
             setStatus(statusEl, "Content ready.");
           }
@@ -619,6 +680,14 @@ async function generateContentStreaming(contentType, topic, generateImages, stat
           break;
         case "image_failed":
           markFrameFailed(data.index, data.error);
+          break;
+        case "image_processing":
+          // 2-3 image requests only (see app/routes/content.py) — the
+          // job is queued and being rendered by a separate, concurrent
+          // invocation of the same Lambda. markFrameProcessing() polls
+          // the (real, valid) URL until it resolves; it deliberately
+          // never times out into a "Failed" state on its own.
+          markFrameProcessing(data.index, data.url);
           break;
         case "warning":
           streamedWarnings.push(data.message);
