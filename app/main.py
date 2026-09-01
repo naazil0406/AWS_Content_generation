@@ -29,6 +29,7 @@ from fastapi.responses import HTMLResponse
 from mangum import Mangum
 
 from app.routes import content
+from app.routes import canva
 from app.services.knowledge_base_service import KnowledgeBaseError, KnowledgeBaseService
 from app.config import settings
 
@@ -82,6 +83,7 @@ app.add_middleware(
 )
 
 app.include_router(content.router, prefix="/api")
+app.include_router(canva.router, prefix="/api/canva")
 
 _FRONTEND_PATH = Path(__file__).resolve().parent.parent / "frontend" / "index.html"
 
@@ -150,30 +152,9 @@ def warmup() -> dict:
         return {"status": "error", "detail": str(exc)}
 
 
-# AWS Lambda entry point — this ONE function/handler serves BOTH triggers:
-#   - API Gateway HTTP API -> this handler -> Mangum -> FastAPI (unchanged)
-#   - SQS (ImageGenerationQueue, 2-3 image requests only) -> this handler
-#     -> app.image_worker's SQS processing logic
-#
-# One Lambda function, deliberately, per explicit requirement — no
-# separate ImageWorkerLambda/ImageGenerationLambda exists. Per-queue
-# concurrency is controlled via the SQS event source's own
-# ScalingConfig.MaximumConcurrency in template.yaml, NOT via
-# ReservedConcurrentExecutions on the whole function — that keeps image
-# job concurrency independent of (and never throttling) normal API
-# traffic, unlike an earlier version of this architecture.
-#
-# Event-shape disambiguation: an SQS-triggered invocation's event is
-# always exactly {"Records": [...]} with SQS-shaped record entries; an
-# API Gateway HTTP API (v2) proxy-integration event never has a
-# top-level "Records" key (it has "version"/"routeKey"/"rawPath"/
-# "requestContext" instead) — the standard way to tell the two apart in
-# a Lambda handling multiple event sources.
+# AWS Lambda entry point.
 _mangum_handler = Mangum(app)
 
 
 def handler(event, context):
-    if isinstance(event, dict) and "Records" in event:
-        from app.image_worker import handler as _image_worker_handler
-        return _image_worker_handler(event, context)
     return _mangum_handler(event, context)

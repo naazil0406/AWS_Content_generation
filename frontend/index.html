@@ -67,6 +67,19 @@ h1 {
 .sub { color: var(--ink-text-soft); font-size: 14.5px; margin: 0; }
 
 .gen-trigger-row { display: flex; justify-content: flex-start; margin-bottom: 24px; }
+.canva-bar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-bottom: 18px; padding-bottom: 16px; border-bottom: 1px solid var(--paper-rule);
+}
+.canva-status { font-family: var(--font-mono); font-size: 12.5px; color: var(--ink-text-soft); }
+.canva-edit-row {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin-top: 14px;
+}
+.canva-edit-hint { font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-text-soft); }
+.image-card-select {
+  position: absolute; top: 10px; right: 10px; width: 18px; height: 18px; z-index: 2; cursor: pointer;
+}
 
 .gen-panel {
   background: var(--paper-raised);
@@ -210,6 +223,18 @@ h1 {
       <p class="sub">Content Type + Topic in — choose Generate for content only, or Generate + Image for content plus your chosen number of grounded image variations.</p>
     </div>
 
+    <div class="canva-bar" id="canvaBar">
+      <span class="canva-status" id="canvaStatusText">Canva: checking…</span>
+      <button class="btn btn-secondary" id="connectCanvaBtn" hidden>Connect Canva</button>
+      <button class="btn btn-secondary" id="disconnectCanvaBtn" hidden>Disconnect Canva</button>
+      <button class="btn btn-secondary" id="createInCanvaBtn" hidden>Create New in Canva</button>
+    </div>
+
+    <div class="card" id="canvaEditedResultCard" hidden>
+      <p class="section-title">Edited in Canva</p>
+      <div id="canvaEditedResultBody"></div>
+    </div>
+
     <div class="gen-trigger-row">
       <button class="btn" id="openGenBtn">+ Generate Content</button>
     </div>
@@ -260,6 +285,12 @@ h1 {
       <div class="content-text" id="contentText"></div>
 
       <div class="images" id="images"></div>
+
+      <div class="canva-edit-row" id="canvaEditRow" hidden>
+        <button class="btn btn-secondary" id="editInCanvaBtn">Edit selected in Canva</button>
+        <span class="canva-edit-hint">Check the image(s) above you want to edit, then click this.</span>
+      </div>
+      <div class="status" id="canvaEditStatus"></div>
 
       <div class="regenerate-row">
         <button class="btn btn-secondary" id="regenerateBtn">&#8635; Regenerate</button>
@@ -472,7 +503,8 @@ function markFrameReady(index, url) {
   const frame = document.getElementById(`frame-${index}`);
   if (!frame) return;
   frame.outerHTML = `
-    <div class="image-card" id="frame-${index}">
+    <div class="image-card" id="frame-${index}" style="position: relative;">
+      <input type="checkbox" class="image-card-select" data-index="${index}" title="Select for Edit in Canva" />
       <span class="image-card-label">Option ${index + 1}</span>
       <img src="${url}" alt="Generated image ${index + 1}" />
       <a class="image-card-download" href="${url}" download="image-${index + 1}.png" target="_blank" rel="noopener">Download</a>
@@ -488,62 +520,6 @@ function markFrameFailed(index, errorMessage) {
     <span class="image-card-label">Option ${index + 1}</span>
     <div class="frame-status failed">Failed: ${escapeHtml(errorMessage || "unknown error")}</div>
   `;
-}
-
-// For 2-3 image requests (see app/routes/content.py — a 1-image request
-// always uses the real-time image_progress/image_ready/image_failed
-// events above instead). The URL handed back here is REAL (a valid
-// presigned S3 GET URL) but the object behind it may not exist yet — a
-// SEPARATE invocation of the same Lambda, triggered by SQS, renders it
-// concurrently with the others. Rather than declaring failure after some
-// arbitrary elapsed time, this represents the image as PROCESSING
-// indefinitely until it actually resolves — a slow Freepik response is
-// not a failure, and there is no reliable way to distinguish "still
-// genuinely working" from "failed and quietly waiting to retry" from the
-// client alone (no job-tracking system exists, by design). Only a real,
-// explicit error from the stream itself (see the "error" case below)
-// shows this as failed.
-const IMAGE_POLL_INTERVAL_MS = 5000;
-
-function markFrameProcessing(index, url) {
-  const frame = document.getElementById(`frame-${index}`);
-  if (!frame) return;
-  frame.innerHTML = `
-    <span class="image-card-label">Option ${index + 1}</span>
-    <div class="frame-spinner"></div>
-    <div class="frame-status" id="frame-status-${index}">Processing…</div>
-  `;
-  pollForImage(index, url, 0);
-}
-
-function pollForImage(index, url, attempt) {
-  const frame = document.getElementById(`frame-${index}`);
-  if (!frame) return; // user navigated away / regenerated before this resolved
-  // NOTE: this must be a GET, not HEAD — the URL is presigned for the
-  // "get_object" S3 action specifically, and that signature is only
-  // valid for the method it was signed for. A 1-byte Range request
-  // keeps this cheap while still using GET.
-  fetch(url, { method: "GET", headers: { Range: "bytes=0-0" } })
-    .then((res) => {
-      if (res.ok) { // 200 or 206 (partial content) both mean the object exists
-        markFrameReady(index, url);
-        return;
-      }
-      throw new Error(`not ready (status ${res.status})`);
-    })
-    .catch(() => {
-      // Deliberately no give-up/failure branch here — see the comment
-      // above markFrameProcessing(). This keeps polling, gently updating
-      // the message so it's clear the page hasn't frozen, for as long as
-      // the tab stays open.
-      const statusEl = document.getElementById(`frame-status-${index}`);
-      if (statusEl) {
-        statusEl.textContent = attempt > 4
-          ? "Still processing — this can take a couple of minutes for multiple images"
-          : "Processing…";
-      }
-      setTimeout(() => pollForImage(index, url, attempt + 1), IMAGE_POLL_INTERVAL_MS);
-    });
 }
 
 // Parses a raw SSE text stream (fetch + ReadableStream, not the native
@@ -666,7 +642,7 @@ async function generateContentStreaming(contentType, topic, generateImages, stat
               statusEl,
               requestedCount === 1
                 ? "Content ready — generating 1 image…"
-                : `Content ready — ${requestedCount} images are processing in the background…`
+                : `Content ready — generating ${requestedCount} images…`
             );
           } else {
             setStatus(statusEl, "Content ready.");
@@ -680,14 +656,6 @@ async function generateContentStreaming(contentType, topic, generateImages, stat
           break;
         case "image_failed":
           markFrameFailed(data.index, data.error);
-          break;
-        case "image_processing":
-          // 2-3 image requests only (see app/routes/content.py) — the
-          // job is queued and being rendered by a separate, concurrent
-          // invocation of the same Lambda. markFrameProcessing() polls
-          // the (real, valid) URL until it resolves; it deliberately
-          // never times out into a "Failed" state on its own.
-          markFrameProcessing(data.index, data.url);
           break;
         case "warning":
           streamedWarnings.push(data.message);
@@ -722,6 +690,17 @@ async function generateContentStreaming(contentType, topic, generateImages, stat
       false,
     );
     closeGenPanel();
+
+    // Canva "Edit in Canva": only meaningful once real images (with a
+    // real generation_id — see app/routes/content.py) exist to select
+    // from. Content-only generations (generate_images=false) have
+    // neither, so the row stays hidden rather than offering a
+    // selection UI with nothing valid to select.
+    currentGenerationId = (finalPayload && finalPayload.generation_id) || null;
+    const canvaEditRow = document.getElementById("canvaEditRow");
+    canvaEditRow.hidden = !(currentGenerationId && finalPayload.images && finalPayload.images.length > 0);
+    document.getElementById("canvaEditStatus").textContent = "";
+
     document.getElementById("resultCard").scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (err) {
     if (err.earlyFailure === undefined) err.earlyFailure = false; // e.g. fetch itself failed
@@ -737,6 +716,11 @@ async function generateContentStreaming(contentType, topic, generateImages, stat
 let lastContentType = null;
 let lastTopic = null;
 let lastGenerateImages = true;
+// Set once a generation with images completes — see runGeneration()'s
+// "done" handling above. Used by "Edit selected in Canva" below to know
+// which generation_id the currently-visible checkboxes' indices belong
+// to (see app/routes/content.py's generation_id field / section 4-6).
+let currentGenerationId = null;
 
 // Shared by the initial "Generate"/"Generate + Image" buttons and the
 // "Regenerate" button — runs the streaming generation with the same
@@ -806,6 +790,179 @@ async function regenerateContent() {
   openGenPanel();
   await runGeneration(lastContentType, lastTopic, lastGenerateImages);
 }
+
+// --- Canva integration -------------------------------------------------
+
+async function refreshCanvaStatus() {
+  const statusText = document.getElementById("canvaStatusText");
+  const connectBtn = document.getElementById("connectCanvaBtn");
+  const disconnectBtn = document.getElementById("disconnectCanvaBtn");
+  const createBtn = document.getElementById("createInCanvaBtn");
+  try {
+    const res = await fetch(API + "/api/canva/status");
+    const data = await res.json();
+    if (data.connected) {
+      statusText.textContent = "Canva: connected";
+      connectBtn.hidden = true;
+      disconnectBtn.hidden = false;
+      createBtn.hidden = false;
+    } else {
+      statusText.textContent = "Canva: not connected";
+      connectBtn.hidden = false;
+      disconnectBtn.hidden = true;
+      createBtn.hidden = true;
+    }
+  } catch (err) {
+    statusText.textContent = "Canva: status unavailable";
+  }
+}
+
+// "Connect Canva" must be a real browser navigation, not a fetch() —
+// the user needs to actually land on Canva's own login/consent page,
+// which a fetch() response body can't do (see app/routes/canva.py's
+// /connect docstring).
+document.getElementById("connectCanvaBtn").addEventListener("click", () => {
+  window.location.href = API + "/api/canva/connect";
+});
+
+document.getElementById("disconnectCanvaBtn").addEventListener("click", async () => {
+  try {
+    await fetch(API + "/api/canva/disconnect", { method: "POST" });
+  } catch (err) { /* best-effort */ }
+  await refreshCanvaStatus();
+});
+
+document.getElementById("createInCanvaBtn").addEventListener("click", async () => {
+  const btn = document.getElementById("createInCanvaBtn");
+  btn.disabled = true;
+  try {
+    const res = await fetch(API + "/api/canva/designs", { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) {
+      if (res.status === 401) {
+        alert("Canva isn't connected (or the connection expired) — click Connect Canva first.");
+      } else {
+        alert(`Couldn't create a new Canva design: ${data.detail || "unknown error"}`);
+      }
+      return;
+    }
+    window.open(data.edit_url, "_blank", "noopener");
+  } catch (err) {
+    alert(`Couldn't reach the server to create a Canva design: ${err.message}`);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById("editInCanvaBtn").addEventListener("click", async () => {
+  const statusEl = document.getElementById("canvaEditStatus");
+  const btn = document.getElementById("editInCanvaBtn");
+
+  if (!currentGenerationId) {
+    return setStatus(statusEl, "No generated images available to edit yet.", true);
+  }
+  const indices = Array.from(document.querySelectorAll(".image-card-select:checked")).map(
+    (el) => parseInt(el.dataset.index, 10),
+  );
+  if (indices.length === 0) {
+    return setStatus(statusEl, "Check at least one image above first.", true);
+  }
+
+  btn.disabled = true;
+  setStatus(statusEl, "Sending selected image(s) to Canva…", false);
+  try {
+    const res = await fetch(API + "/api/canva/designs/from-images", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ generation_id: currentGenerationId, indices }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      if (res.status === 401) {
+        setStatus(statusEl, "Canva isn't connected (or the connection expired) — click Connect Canva first.", true);
+      } else {
+        setStatus(statusEl, `Couldn't send image(s) to Canva: ${data.detail || "unknown error"}`, true);
+      }
+      return;
+    }
+    setStatus(statusEl, (data.warnings || []).join(" ") || "Opened in Canva.", false);
+    window.open(data.edit_url, "_blank", "noopener");
+  } catch (err) {
+    setStatus(statusEl, `Couldn't reach the server: ${err.message}`, true);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// Canva's OAuth callback (app/routes/canva.py's /callback) redirects the
+// browser back here with ?canva=connected or ?canva=error&reason=... —
+// surface that once, then strip it from the URL so a page refresh
+// doesn't re-show a stale message.
+(function handleCanvaRedirectBack() {
+  const params = new URLSearchParams(window.location.search);
+  const canvaParam = params.get("canva");
+  if (canvaParam === "connected") {
+    alert("Canva connected successfully.");
+  } else if (canvaParam === "error") {
+    const reason = params.get("reason") || "unknown_error";
+    alert(`Canva connection failed: ${reason}`);
+  }
+  if (canvaParam) {
+    params.delete("canva");
+    params.delete("reason");
+    const newQuery = params.toString();
+    window.history.replaceState({}, "", window.location.pathname + (newQuery ? `?${newQuery}` : ""));
+  }
+})();
+
+// "Return to integration" from Canva's editor (app/routes/canva.py's
+// /return, NOT /callback — see that route's docstring for why these
+// must be separate) lands back here with ?canva_edit=<correlation_id>
+// on success, or ?canva_edit_error=<reason> if something went wrong
+// before we could even identify the design. This is what actually
+// fetches the EDITED result, not just acknowledges the round trip.
+(function handleCanvaEditReturn() {
+  const params = new URLSearchParams(window.location.search);
+  const correlationId = params.get("canva_edit");
+  const editError = params.get("canva_edit_error");
+
+  if (editError) {
+    document.getElementById("canvaEditedResultCard").hidden = false;
+    document.getElementById("canvaEditedResultBody").innerHTML =
+      `<div class="status error">Couldn't identify the Canva design you returned from (${escapeHtml(editError)}). ` +
+      `Try Edit in Canva again.</div>`;
+  }
+
+  if (correlationId) {
+    const card = document.getElementById("canvaEditedResultCard");
+    const body = document.getElementById("canvaEditedResultBody");
+    card.hidden = false;
+    body.innerHTML = `<div class="status">Getting your edited image from Canva…</div>`;
+    card.scrollIntoView({ behavior: "smooth", block: "start" });
+
+    fetch(`${API}/api/canva/exports/${encodeURIComponent(correlationId)}`, { method: "POST" })
+      .then(async (res) => {
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Export failed.");
+        body.innerHTML = `
+          <img src="${data.edited_image_url}" alt="Edited Canva design" style="max-width: 320px; display: block; border-radius: 8px; margin-bottom: 10px;" />
+          <a class="image-card-download" href="${data.edited_image_url}" download="edited-${data.design_id}.png" target="_blank" rel="noopener">Download</a>
+        `;
+      })
+      .catch((err) => {
+        body.innerHTML = `<div class="status error">Couldn't get the edited image from Canva: ${escapeHtml(err.message)}</div>`;
+      });
+  }
+
+  if (correlationId || editError) {
+    params.delete("canva_edit");
+    params.delete("canva_edit_error");
+    const newQuery = params.toString();
+    window.history.replaceState({}, "", window.location.pathname + (newQuery ? `?${newQuery}` : ""));
+  }
+})();
+
+refreshCanvaStatus();
 
 document.getElementById("openGenBtn").addEventListener("click", openGenPanel);
 document.getElementById("closeGenBtn").addEventListener("click", closeGenPanel);

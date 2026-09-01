@@ -1,0 +1,640 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Description": "AI Content Generation Service ? FastAPI on Lambda behind an HTTP API, via Mangum. Deploy with: sam build && sam deploy --guided\n",
+    "Parameters": {
+        "KnowledgeBaseId": {
+            "Type": "String",
+            "Description": "ID of the existing Amazon Bedrock Knowledge Base (Bedrock console -> Knowledge Bases -> your KB -> Knowledge base overview). Not a URL.\n"
+        },
+        "KnowledgeBaseRegion": {
+            "Type": "String",
+            "Default": "us-east-1",
+            "Description": "Region the Bedrock Knowledge Base lives in."
+        },
+        "ImageProvider": {
+            "Type": "String",
+            "Default": "freepik",
+            "AllowedValues": [
+                "freepik",
+                "aws",
+                "pollinations"
+            ]
+        },
+        "FreepikApiKey": {
+            "Type": "String",
+            "NoEcho": true,
+            "Default": ""
+        },
+        "FreepikModel": {
+            "Type": "String",
+            "Default": "",
+            "Description": "Empty = Freepik's Mystic endpoint (default, slower ~90-130s). Set to one of flux-dev / hyperflux / seedream-v4 / seedream-v4-5 / seedream-v5-lite to use that model's own faster endpoint instead ? see app/services/image_generation_service.py's _FLUX_ENDPOINTS.\n"
+        },
+        "FreepikFilterNsfw": {
+            "Type": "String",
+            "Default": "true",
+            "AllowedValues": [
+                "true",
+                "false"
+            ],
+            "Description": "Mystic-endpoint-only NSFW filter toggle (ignored by the Flux/Seedream endpoints above)."
+        },
+        "FreepikMaxConcurrentSubmissions": {
+            "Type": "Number",
+            "Default": 1,
+            "Description": "Caps simultaneous Freepik submission POSTs per request's 3 images to avoid the gateway collision above. Only the fast submission step is capped ? polling/download stay fully parallel."
+        },
+        "FreepikSubmitMaxRetries": {
+            "Type": "Number",
+            "Default": 2,
+            "Description": "Extra attempts (beyond the first) for a failed Freepik submission ? recovers from the collision above if it happens despite the concurrency cap."
+        },
+        "FreepikSubmitRetryBackoffSeconds": {
+            "Type": "Number",
+            "Default": 0.75,
+            "Description": "Linear backoff between retry attempts (0.75s, 1.5s, ...)."
+        },
+        "FreepikPollIntervalSeconds": {
+            "Type": "Number",
+            "Default": 3,
+            "Description": "How often (seconds) the worker polls Freepik for task completion after submitting."
+        },
+        "FreepikPollTimeoutSeconds": {
+            "Type": "Number",
+            "Default": 170,
+            "Description": "Max seconds the worker waits for Freepik to finish rendering one image before giving up (raises a clean error, not a Lambda hard kill). Must stay comfortably BELOW ContentGenerationFunction's Timeout (below) to leave room for the submit step, image download, and S3 upload that happen after Freepik itself finishes ? this value plus roughly 30-40s of margin is what that Timeout should be set to. 170s leaves real margin over Mystic's documented ~90-130s typical latency; the previous 120s default did not.\n"
+        },
+        "ImageQueueVisibilityTimeoutSeconds": {
+            "Type": "Number",
+            "Default": 1260,
+            "Description": "Must exceed ContentGenerationFunction's own Timeout (below) with margin ? otherwise SQS could redeliver a message to a second invocation while the first is still legitimately running, causing the same image to render twice. AWS's own guidance is >=6x the function timeout; 1260s (21 min) is exactly 6x a 210s timeout.\n"
+        },
+        "ImageQueueMaxReceiveCount": {
+            "Type": "Number",
+            "Default": 3,
+            "Description": "How many times SQS redelivers a failing message to ContentGenerationFunction (via its ImageQueueEvent SQS trigger) before giving up and routing it to ImageGenerationDLQ instead. This is the queue's OWN built-in retry mechanism, not an application-level one.\n"
+        },
+        "ImageQueueMaximumConcurrency": {
+            "Type": "Number",
+            "Default": 6,
+            "Description": "Max simultaneous Lambda invocations triggered BY THIS QUEUE specifically ? this is the real \"how many requests hit Freepik at once, safely\" control, and it is deliberately scoped to the queue alone (via the SQS event source's own ScalingConfig), NOT to ContentGenerationFunction's overall concurrency. That means image jobs queueing up under load can never throttle or compete with normal API-serving traffic ? the two are independent pools. AWS requires this value to be between 2 and 1000 for SQS event sources. 6 is a starting point sized for typical shared-account Lambda concurrency limits (default 1000 account-wide) ? raise it if you expect sustained high multi-image traffic.\n"
+        },
+        "DeploymentPreferenceType": {
+            "Type": "String",
+            "Default": "Canary10Percent5Minutes",
+            "AllowedValues": [
+                "AllAtOnce",
+                "Canary10Percent5Minutes",
+                "Canary10Percent10Minutes",
+                "Canary10Percent15Minutes",
+                "Canary10Percent30Minutes",
+                "Linear10PercentEvery1Minute",
+                "Linear10PercentEvery2Minutes",
+                "Linear10PercentEvery3Minutes",
+                "Linear10PercentEvery10Minutes"
+            ],
+            "Description": "How the \"prod\" alias shifts traffic to each new Lambda version. AllAtOnce = simple immediate cutover (Section A: version + alias, no traffic shifting). Canary/Linear = SAM/CodeDeploy shifts a small percentage of traffic first, watches ProdAliasErrorAlarm below, and automatically shifts prod back to the previous version if it fires before completing the rollout (Section B). Default recommended: Canary10Percent5Minutes ? see README's \"Lambda Versioning & Rollback\" section for the full A-vs-B rationale.\n"
+        }
+    },
+    "Outputs": {
+        "ApiUrl": {
+            "Description": "Invoke URL for the Content Generation API",
+            "Value": {
+                "Fn::Sub": "https://${ContentGenerationApi}.execute-api.${AWS::Region}.amazonaws.com"
+            }
+        },
+        "FunctionArn": {
+            "Value": {
+                "Fn::GetAtt": [
+                    "ContentGenerationFunction",
+                    "Arn"
+                ]
+            }
+        },
+        "FunctionName": {
+            "Description": "The Lambda function's actual name in AWS",
+            "Value": {
+                "Ref": "ContentGenerationFunction"
+            }
+        },
+        "ProdAliasArn": {
+            "Description": "The stable \"prod\" alias ARN ? this, not the bare FunctionArn above, is what API Gateway actually invokes. Use with `aws lambda update-alias` for manual rollback (see README's Rollback section).\n",
+            "Value": {
+                "Fn::Sub": "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${ContentGenerationFunction}:prod"
+            }
+        },
+        "GeneratedImagesBucketName": {
+            "Description": "S3 bucket storing generated images",
+            "Value": {
+                "Ref": "GeneratedImagesBucket"
+            }
+        },
+        "ImageGenerationQueueUrl": {
+            "Description": "SQS queue URL for 2-3 image-count requests",
+            "Value": {
+                "Ref": "ImageGenerationQueueV3"
+            }
+        },
+        "ImageGenerationQueueArn": {
+            "Value": {
+                "Fn::GetAtt": [
+                    "ImageGenerationQueueV3",
+                    "Arn"
+                ]
+            }
+        },
+        "ImageGenerationDLQUrl": {
+            "Description": "Dead-letter queue ? inspect for image jobs that failed maxReceiveCount times",
+            "Value": {
+                "Ref": "ImageGenerationDLQ"
+            }
+        }
+    },
+    "Resources": {
+        "GeneratedImagesBucket": {
+            "Type": "AWS::S3::Bucket",
+            "Properties": {
+                "LifecycleConfiguration": {
+                    "Rules": [
+                        {
+                            "Id": "ExpireGeneratedImages",
+                            "Status": "Enabled",
+                            "ExpirationInDays": 1
+                        }
+                    ]
+                }
+            },
+            "Metadata": {
+                "SamResourceId": "GeneratedImagesBucket"
+            }
+        },
+        "ImageGenerationDLQ": {
+            "Type": "AWS::SQS::Queue",
+            "Properties": {
+                "QueueName": "ImageGenerationDLQ",
+                "MessageRetentionPeriod": 1209600
+            },
+            "Metadata": {
+                "SamResourceId": "ImageGenerationDLQ"
+            }
+        },
+        "ImageGenerationQueueV3": {
+            "Type": "AWS::SQS::Queue",
+            "Properties": {
+                "QueueName": "ImageGenerationQueue",
+                "VisibilityTimeout": {
+                    "Ref": "ImageQueueVisibilityTimeoutSeconds"
+                },
+                "RedrivePolicy": {
+                    "deadLetterTargetArn": {
+                        "Fn::GetAtt": [
+                            "ImageGenerationDLQ",
+                            "Arn"
+                        ]
+                    },
+                    "maxReceiveCount": {
+                        "Ref": "ImageQueueMaxReceiveCount"
+                    }
+                }
+            },
+            "Metadata": {
+                "SamResourceId": "ImageGenerationQueueV3"
+            }
+        },
+        "ProdAliasErrorAlarm": {
+            "Type": "AWS::CloudWatch::Alarm",
+            "Properties": {
+                "AlarmDescription": "Lambda Errors > 0 for the content_generation function's \"prod\" alias ? triggers CodeDeploy's automatic rollback of the \"prod\" alias while a canary/linear deployment is in progress.\n",
+                "Namespace": "AWS/Lambda",
+                "MetricName": "Errors",
+                "Statistic": "Sum",
+                "Period": 60,
+                "EvaluationPeriods": 1,
+                "Threshold": 0,
+                "ComparisonOperator": "GreaterThanThreshold",
+                "TreatMissingData": "notBreaching",
+                "Dimensions": [
+                    {
+                        "Name": "FunctionName",
+                        "Value": {
+                            "Ref": "ContentGenerationFunction"
+                        }
+                    },
+                    {
+                        "Name": "Resource",
+                        "Value": {
+                            "Fn::Sub": "${ContentGenerationFunction}:prod"
+                        }
+                    }
+                ]
+            },
+            "Metadata": {
+                "SamResourceId": "ProdAliasErrorAlarm"
+            }
+        },
+        "ContentGenerationFunction": {
+            "Type": "AWS::Lambda::Function",
+            "Metadata": {
+                "SamResourceId": "ContentGenerationFunction"
+            },
+            "Properties": {
+                "Code": {
+                    "S3Bucket": "aws-sam-cli-managed-default-samclisourcebucket-qp8xdhplltqz",
+                    "S3Key": "content-generation-stack/8fbd40e2209412280ae09f1884861929"
+                },
+                "FunctionName": "content_generation",
+                "Handler": "app.main.handler",
+                "MemorySize": 1024,
+                "Role": {
+                    "Fn::GetAtt": [
+                        "ContentGenerationFunctionRole",
+                        "Arn"
+                    ]
+                },
+                "Runtime": "python3.11",
+                "Timeout": 210,
+                "Environment": {
+                    "Variables": {
+                        "LOG_LEVEL": "INFO",
+                        "KNOWLEDGE_BASE_ID": {
+                            "Ref": "KnowledgeBaseId"
+                        },
+                        "KNOWLEDGE_BASE_REGION": {
+                            "Ref": "KnowledgeBaseRegion"
+                        },
+                        "IMAGE_PROVIDER": {
+                            "Ref": "ImageProvider"
+                        },
+                        "FREEPIK_API_KEY": {
+                            "Ref": "FreepikApiKey"
+                        },
+                        "FREEPIK_MODEL": {
+                            "Ref": "FreepikModel"
+                        },
+                        "FREEPIK_FILTER_NSFW": {
+                            "Ref": "FreepikFilterNsfw"
+                        },
+                        "FREEPIK_MAX_CONCURRENT_SUBMISSIONS": {
+                            "Ref": "FreepikMaxConcurrentSubmissions"
+                        },
+                        "FREEPIK_SUBMIT_MAX_RETRIES": {
+                            "Ref": "FreepikSubmitMaxRetries"
+                        },
+                        "FREEPIK_SUBMIT_RETRY_BACKOFF_SECONDS": {
+                            "Ref": "FreepikSubmitRetryBackoffSeconds"
+                        },
+                        "FREEPIK_POLL_INTERVAL": {
+                            "Ref": "FreepikPollIntervalSeconds"
+                        },
+                        "FREEPIK_POLL_TIMEOUT": {
+                            "Ref": "FreepikPollTimeoutSeconds"
+                        },
+                        "GENERATED_IMAGES_BUCKET": {
+                            "Ref": "GeneratedImagesBucket"
+                        },
+                        "IMAGE_QUEUE_URL": {
+                            "Ref": "ImageGenerationQueueV3"
+                        }
+                    }
+                },
+                "Tags": [
+                    {
+                        "Key": "lambda:createdBy",
+                        "Value": "SAM"
+                    }
+                ]
+            }
+        },
+        "ContentGenerationFunctionVersionb37d0a611e": {
+            "Type": "AWS::Lambda::Version",
+            "DeletionPolicy": "Retain",
+            "Properties": {
+                "FunctionName": {
+                    "Ref": "ContentGenerationFunction"
+                }
+            }
+        },
+        "ContentGenerationFunctionAliasprod": {
+            "Type": "AWS::Lambda::Alias",
+            "UpdatePolicy": {
+                "CodeDeployLambdaAliasUpdate": {
+                    "ApplicationName": {
+                        "Ref": "ServerlessDeploymentApplication"
+                    },
+                    "DeploymentGroupName": {
+                        "Ref": "ContentGenerationFunctionDeploymentGroup"
+                    }
+                }
+            },
+            "Properties": {
+                "Name": "prod",
+                "FunctionName": {
+                    "Ref": "ContentGenerationFunction"
+                },
+                "FunctionVersion": {
+                    "Fn::GetAtt": [
+                        "ContentGenerationFunctionVersionb37d0a611e",
+                        "Version"
+                    ]
+                }
+            }
+        },
+        "ContentGenerationFunctionRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "AssumeRolePolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Action": [
+                                "sts:AssumeRole"
+                            ],
+                            "Effect": "Allow",
+                            "Principal": {
+                                "Service": [
+                                    "lambda.amazonaws.com"
+                                ]
+                            }
+                        }
+                    ]
+                },
+                "ManagedPolicyArns": [
+                    "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
+                    "arn:aws:iam::aws:policy/service-role/AWSLambdaSQSQueueExecutionRole"
+                ],
+                "Policies": [
+                    {
+                        "PolicyName": "ContentGenerationFunctionRolePolicy0",
+                        "PolicyDocument": {
+                            "Statement": [
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "bedrock:InvokeModel",
+                                        "bedrock:Converse"
+                                    ],
+                                    "Resource": "*"
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "bedrock:Retrieve"
+                                    ],
+                                    "Resource": {
+                                        "Fn::Sub": "arn:aws:bedrock:${KnowledgeBaseRegion}:${AWS::AccountId}:knowledge-base/${KnowledgeBaseId}"
+                                    }
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "s3:PutObject",
+                                        "s3:GetObject"
+                                    ],
+                                    "Resource": {
+                                        "Fn::Sub": "${GeneratedImagesBucket.Arn}/*"
+                                    }
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "sqs:SendMessage"
+                                    ],
+                                    "Resource": {
+                                        "Fn::GetAtt": [
+                                            "ImageGenerationQueueV3",
+                                            "Arn"
+                                        ]
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ],
+                "Tags": [
+                    {
+                        "Key": "lambda:createdBy",
+                        "Value": "SAM"
+                    }
+                ]
+            }
+        },
+        "ContentGenerationFunctionRootEventPermission": {
+            "Type": "AWS::Lambda::Permission",
+            "Properties": {
+                "Action": "lambda:InvokeFunction",
+                "FunctionName": {
+                    "Ref": "ContentGenerationFunctionAliasprod"
+                },
+                "Principal": "apigateway.amazonaws.com",
+                "SourceArn": {
+                    "Fn::Sub": [
+                        "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${__ApiId__}/${__Stage__}/GET/",
+                        {
+                            "__ApiId__": {
+                                "Ref": "ContentGenerationApi"
+                            },
+                            "__Stage__": "*"
+                        }
+                    ]
+                }
+            }
+        },
+        "ContentGenerationFunctionApiEventPermission": {
+            "Type": "AWS::Lambda::Permission",
+            "Properties": {
+                "Action": "lambda:InvokeFunction",
+                "FunctionName": {
+                    "Ref": "ContentGenerationFunctionAliasprod"
+                },
+                "Principal": "apigateway.amazonaws.com",
+                "SourceArn": {
+                    "Fn::Sub": [
+                        "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${__ApiId__}/${__Stage__}/*/*",
+                        {
+                            "__ApiId__": {
+                                "Ref": "ContentGenerationApi"
+                            },
+                            "__Stage__": "*"
+                        }
+                    ]
+                }
+            }
+        },
+        "ContentGenerationFunctionImageQueueEvent": {
+            "Type": "AWS::Lambda::EventSourceMapping",
+            "Properties": {
+                "BatchSize": 1,
+                "EventSourceArn": {
+                    "Fn::GetAtt": [
+                        "ImageGenerationQueueV3",
+                        "Arn"
+                    ]
+                },
+                "FunctionName": {
+                    "Ref": "ContentGenerationFunctionAliasprod"
+                },
+                "ScalingConfig": {
+                    "MaximumConcurrency": {
+                        "Ref": "ImageQueueMaximumConcurrency"
+                    }
+                }
+            }
+        },
+        "ContentGenerationApi": {
+            "Type": "AWS::ApiGatewayV2::Api",
+            "Metadata": {
+                "SamResourceId": "ContentGenerationApi"
+            },
+            "Properties": {
+                "Body": {
+                    "info": {
+                        "version": "1.0",
+                        "title": {
+                            "Ref": "AWS::StackName"
+                        }
+                    },
+                    "paths": {
+                        "/{proxy+}": {
+                            "x-amazon-apigateway-any-method": {
+                                "x-amazon-apigateway-integration": {
+                                    "httpMethod": "POST",
+                                    "type": "aws_proxy",
+                                    "uri": {
+                                        "Fn::Sub": "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ContentGenerationFunctionAliasprod}/invocations"
+                                    },
+                                    "payloadFormatVersion": "2.0"
+                                },
+                                "responses": {},
+                                "parameters": [
+                                    {
+                                        "required": true,
+                                        "name": "proxy+",
+                                        "in": "path"
+                                    }
+                                ]
+                            }
+                        },
+                        "/": {
+                            "get": {
+                                "x-amazon-apigateway-integration": {
+                                    "httpMethod": "POST",
+                                    "type": "aws_proxy",
+                                    "uri": {
+                                        "Fn::Sub": "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ContentGenerationFunctionAliasprod}/invocations"
+                                    },
+                                    "payloadFormatVersion": "2.0"
+                                },
+                                "responses": {}
+                            }
+                        }
+                    },
+                    "x-amazon-apigateway-cors": {
+                        "allowOrigins": [
+                            "*"
+                        ],
+                        "allowHeaders": [
+                            "*"
+                        ],
+                        "allowMethods": [
+                            "*"
+                        ]
+                    },
+                    "openapi": "3.0.1",
+                    "tags": [
+                        {
+                            "name": "httpapi:createdBy",
+                            "x-amazon-apigateway-tag-value": "SAM"
+                        }
+                    ]
+                }
+            }
+        },
+        "ContentGenerationApiApiGatewayDefaultStage": {
+            "Type": "AWS::ApiGatewayV2::Stage",
+            "Properties": {
+                "ApiId": {
+                    "Ref": "ContentGenerationApi"
+                },
+                "StageName": "$default",
+                "Tags": {
+                    "httpapi:createdBy": "SAM"
+                },
+                "AutoDeploy": true
+            }
+        },
+        "ServerlessDeploymentApplication": {
+            "Type": "AWS::CodeDeploy::Application",
+            "Properties": {
+                "ComputePlatform": "Lambda"
+            }
+        },
+        "CodeDeployServiceRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "AssumeRolePolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Action": [
+                                "sts:AssumeRole"
+                            ],
+                            "Effect": "Allow",
+                            "Principal": {
+                                "Service": [
+                                    "codedeploy.amazonaws.com"
+                                ]
+                            }
+                        }
+                    ]
+                },
+                "ManagedPolicyArns": [
+                    "arn:aws:iam::aws:policy/service-role/AWSCodeDeployRoleForLambda"
+                ]
+            }
+        },
+        "ContentGenerationFunctionDeploymentGroup": {
+            "Type": "AWS::CodeDeploy::DeploymentGroup",
+            "Properties": {
+                "AlarmConfiguration": {
+                    "Enabled": true,
+                    "Alarms": [
+                        {
+                            "Name": {
+                                "Ref": "ProdAliasErrorAlarm"
+                            }
+                        }
+                    ]
+                },
+                "ApplicationName": {
+                    "Ref": "ServerlessDeploymentApplication"
+                },
+                "AutoRollbackConfiguration": {
+                    "Enabled": true,
+                    "Events": [
+                        "DEPLOYMENT_FAILURE",
+                        "DEPLOYMENT_STOP_ON_ALARM",
+                        "DEPLOYMENT_STOP_ON_REQUEST"
+                    ]
+                },
+                "DeploymentConfigName": {
+                    "Fn::Sub": [
+                        "CodeDeployDefault.Lambda${ConfigName}",
+                        {
+                            "ConfigName": "Canary10Percent5Minutes"
+                        }
+                    ]
+                },
+                "DeploymentStyle": {
+                    "DeploymentType": "BLUE_GREEN",
+                    "DeploymentOption": "WITH_TRAFFIC_CONTROL"
+                },
+                "ServiceRoleArn": {
+                    "Fn::GetAtt": [
+                        "CodeDeployServiceRole",
+                        "Arn"
+                    ]
+                }
+            }
+        }
+    }
+}

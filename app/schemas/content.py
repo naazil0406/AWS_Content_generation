@@ -237,6 +237,15 @@ class GenerateContentResponse(BaseModel):
         "generate_images was True, fewer if some renders failed, empty when "
         "generate_images=False (content-only, the 'Generate' action).",
     )
+    generation_id: Optional[str] = Field(
+        default=None,
+        description="Identifies this specific image generation (None when generate_images "
+        "was False / no images were produced). `images[i]` corresponds to index i within "
+        "this generation_id. Used by the Canva 'Edit in Canva' feature "
+        "(POST /api/canva/designs/from-images) to reference specific already-generated "
+        "images — see app/services/image_ownership_service.py for how ownership of these "
+        "indices is verified server-side before anything is sent to Canva.",
+    )
     warnings: List[str] = Field(
         default_factory=list,
         description="Non-fatal notices about this request, e.g. \"Selected resolution '4K' "

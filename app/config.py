@@ -200,18 +200,6 @@ class Settings:
     S3_REGION: str = os.getenv("S3_REGION", os.getenv("AWS_REGION", "us-east-1"))
     S3_PRESIGNED_URL_EXPIRY: int = int(os.getenv("S3_PRESIGNED_URL_EXPIRY", "3600"))
 
-    # --- Image Generation Queue (SQS) ---
-    # Only used when image_count is 2 or 3 (see app/routes/content.py) —
-    # a 1-image request always goes straight to Freepik synchronously,
-    # never touching this queue at all. Set by template.yaml to
-    # ImageGenerationQueue's URL. The SAME Lambda (content_generation)
-    # both sends to this queue (from the API-serving request) and
-    # consumes from it (via the SQS event source in template.yaml,
-    # routed by app/main.py's handler to app/image_worker.py) — no
-    # separate worker Lambda exists.
-    IMAGE_QUEUE_URL: str = os.getenv("IMAGE_QUEUE_URL", "")
-    SQS_REGION: str = os.getenv("SQS_REGION", os.getenv("AWS_REGION", "us-east-1"))
-
     # --- Streaming endpoint (/api/generate/stream) timing budget ---
     # The whole request — KB retrieval + combined LLM call + N parallel
     # image renders + S3 uploads — is budgeted to finish comfortably
@@ -230,6 +218,38 @@ class Settings:
 
     # --- Logging ---
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
+
+    # --- Canva integration (OAuth 2.0 + Authorization Code + PKCE) ---
+    # Local dev default matches CANVA_REDIRECT_URI you register in the
+    # Canva Developer Portal for this integration. NEVER hardcode
+    # CANVA_CLIENT_SECRET anywhere but an environment variable / .env —
+    # see app/services/canva_service.py for where it's used (only in
+    # server-side token-exchange calls; it is never sent to the
+    # frontend).
+    CANVA_CLIENT_ID: str = os.getenv("CANVA_CLIENT_ID", "")
+    CANVA_CLIENT_SECRET: str = os.getenv("CANVA_CLIENT_SECRET", "")
+    CANVA_REDIRECT_URI: str = os.getenv("CANVA_REDIRECT_URI", "http://localhost:8000/api/canva/callback")
+    # Space-separated, per Canva's OAuth scope format. asset:write/read
+    # is needed for the asset-upload flow (section 5); design:content:write
+    # and design:meta:read are needed to create a design and get back its
+    # edit URL. Verify these exact scope names against your Canva
+    # integration's configured scopes in the Developer Portal — Canva
+    # only grants scopes that are BOTH requested here AND enabled for
+    # your integration there.
+    CANVA_SCOPES: str = os.getenv(
+        "CANVA_SCOPES",
+        "asset:read asset:write design:content:read design:content:write design:meta:read",
+    )
+
+    # --- Local development storage (Canva tokens + image ownership) ---
+    # A single small JSON-file-backed key/value store used ONLY for
+    # local development — see app/services/local_dev_store.py for the
+    # interface and exactly what to swap in for production (DynamoDB).
+    # File-backed (not just an in-memory dict) specifically so state
+    # survives `uvicorn --reload` restarts during local testing — a
+    # dropped Canva connection every time you edit a .py file would
+    # make local OAuth testing painful for no reason.
+    LOCAL_DEV_STORE_PATH: str = os.getenv("LOCAL_DEV_STORE_PATH", ".local_dev_store.json")
 
 
 settings = Settings()
