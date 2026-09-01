@@ -787,3 +787,9 @@ changes; no global/in-memory state was introduced anywhere in this work.
   and `/api/health` exist today. Build those out if the full frontend
   experience (pick-an-image, edit, version history) is needed, or trim
   the frontend down to match the current single-shot API.
+
+
+CANVA_CLIENT_ID=
+CANVA_CLIENT_SECRET=
+CANVA_REDIRECT_URI= 
+CANVA_SCOPES=
