@@ -151,60 +151,7 @@ def upload_images_to_s3(images: List[bytes], generation_id: str = None) -> List[
     return results
 
 
-def edited_image_object_key(session_id: str, design_id: str, extension: str = "png") -> str:
-    """Key convention for a Canva-edited result — deliberately a SEPARATE
-    prefix (edited/...) from image_object_key's (generated/...), per
-    explicit requirement: never overwrite the original generated image.
-    Scoped under session_id (this app's stand-in for a real user_id —
-    see app/services/session_service.py) so two sessions editing
-    different designs can never collide on the same key, and so a
-    listing under edited/<session_id>/ is inherently scoped to one
-    session's own results."""
-    return f"edited/{session_id}/{design_id}.{extension}"
-
-
-def upload_edited_image(image_bytes: bytes, session_id: str, design_id: str, extension: str = "png") -> tuple:
-    """Uploads a Canva-exported design to S3 under edited_image_object_key()
-    and returns (s3_key, presigned_url). Used by the Canva
-    "return to integration" flow (app/routes/canva.py's
-    /exports/{correlation_id}) — NEVER by the original image-generation
-    path, which continues to use put_generated_image()/image_object_key()
-    exactly as before."""
-    if not settings.GENERATED_IMAGES_BUCKET:
-        raise RuntimeError(
-            "GENERATED_IMAGES_BUCKET is not configured. Set it to the S3 "
-            "bucket name created by template.yaml for storing generated images."
-        )
-    key = edited_image_object_key(session_id, design_id, extension)
-    content_type = "image/png" if extension == "png" else f"image/{extension}"
-    try:
-        _client().put_object(
-            Bucket=settings.GENERATED_IMAGES_BUCKET,
-            Key=key,
-            Body=image_bytes,
-            ContentType=content_type,
-        )
-        url = _client().generate_presigned_url(
-            "get_object",
-            Params={"Bucket": settings.GENERATED_IMAGES_BUCKET, "Key": key},
-            ExpiresIn=settings.S3_PRESIGNED_URL_EXPIRY,
-        )
-        return key, url
-    except (ClientError, BotoCoreError) as exc:
-        logger.error("Failed to upload edited image (design %s) to S3: %s", design_id, exc)
-        raise RuntimeError(f"Failed to upload edited image to S3: {exc}") from exc
-
-
 def get_image_bytes(generation_id: str, index: int) -> bytes:
-    """Fetch the raw bytes of a previously-uploaded generated image —
-    used by the Canva integration (app/services/canva_service.py) to
-    read an already-generated image out of S3 before re-uploading it to
-    Canva's asset-upload API. Reuses image_object_key() so this can
-    never drift from the key convention put_generated_image() actually
-    writes to.
-
-    Raises RuntimeError on any S3 failure (missing object, permissions,
-    etc.) — same convention as the rest of this module."""
     if not settings.GENERATED_IMAGES_BUCKET:
         raise RuntimeError(
             "GENERATED_IMAGES_BUCKET is not configured. Set it to the S3 "

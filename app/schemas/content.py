@@ -74,6 +74,15 @@ class GenerateContentRequest(BaseModel):
     """Incoming request: a user prompt describing what to generate."""
 
     prompt: str = Field(..., min_length=1, description="The user's content request / topic.")
+    approved_alternative_topic: Optional[str] = Field(
+        default=None,
+        description="Set ONLY after the user explicitly clicked 'Yes, Generate' in response to "
+        "a 'similar match' prompt from POST /api/check-topic (PART 4 of the KB-relevance spec) "
+        "— the exact matched_topic string that endpoint returned. When present, /generate and "
+        "/generate/stream skip re-classifying the Knowledge Base match (already resolved) and "
+        "generate directly using this approved topic alongside the original prompt. Never set "
+        "this from anything other than that explicit user click.",
+    )
     content_type: str = Field(
         default="Recall Card",
         description=f"One of: {', '.join(CONTENT_TYPES)}",
@@ -228,6 +237,23 @@ class GeneratedContent(BaseModel):
     )
 
 
+class CheckTopicResponse(BaseModel):
+    """Response for POST /api/check-topic — the Knowledge Base exact/
+    similar/no-match classification, run BEFORE any content or image
+    generation (see app/services/validation_service.classify_kb_match()).
+    The frontend uses `match_type` to decide what to do next: "exact" ->
+    call /generate or /generate/stream directly; "similar" -> show the
+    Yes/No approval prompt using `message`, and if the user clicks Yes,
+    resend with approved_alternative_topic=matched_topic; "none" -> show
+    `message` as a warning and stop, never calling generate at all."""
+
+    match_type: str = Field(..., description="'exact', 'similar', or 'none'.")
+    matched_topic: Optional[str] = Field(default=None, description="Set only when match_type is 'similar'.")
+    message: str = Field(..., description="User-facing message for this match type — see validation_rules.txt.")
+    corrected_prompt: str = Field(..., description="Spelling-corrected prompt — reuse this, not the raw input, in the subsequent /generate call.")
+    spelling_warning: Optional[str] = None
+
+
 class GenerateContentResponse(BaseModel):
     content: GeneratedContent
     images: List[str] = Field(
@@ -241,10 +267,7 @@ class GenerateContentResponse(BaseModel):
         default=None,
         description="Identifies this specific image generation (None when generate_images "
         "was False / no images were produced). `images[i]` corresponds to index i within "
-        "this generation_id. Used by the Canva 'Edit in Canva' feature "
-        "(POST /api/canva/designs/from-images) to reference specific already-generated "
-        "images — see app/services/image_ownership_service.py for how ownership of these "
-        "indices is verified server-side before anything is sent to Canva.",
+        "this generation_id.",
     )
     warnings: List[str] = Field(
         default_factory=list,

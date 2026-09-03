@@ -761,6 +761,22 @@ instruction like "add relevant text," "include labels," "add a title
 here," or "insert appropriate headings." Every text-shaped instruction
 must already be the literal string, per LITERAL TEXT CONTENT above.
 
+A related but distinct mistake: never describe the FORMATTING RULE for a
+string in place of the string itself — e.g. writing "a brief caption
+here" or "keep this tag concise" as if that description WERE the quoted
+text to render, rather than an instruction to yourself about how to
+write it. That is restating this section's own length/style guidance,
+not applying it — the renderer has no way to tell a restated instruction
+apart from real content and will draw the instruction's own words onto
+the image verbatim. Every quoted string must be genuine, specific
+content about the actual subject (a real sign, a real step, a real
+fact) — if you cannot come up with genuine specific content for an
+item, DROP that item entirely (per STEP 1's own instruction above)
+rather than writing a generic style/length description as a stand-in
+for it. This applies per-item: a properly quoted title does not excuse
+leaving a list item, heading, or label without its own genuine quoted
+text.
+
 If no style is otherwise indicated by the content, default to: flat
 vector infographic illustration, clean modern corporate design,
 iconographic figures and objects in bold saturated colors with dark

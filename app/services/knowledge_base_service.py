@@ -176,5 +176,5 @@ class KnowledgeBaseService:
             )
 
             if text and text.strip():
-                parsed.append({"text": text, "source": source})
+                parsed.append({"text": text, "source": source, "score": result.get("score")})
         return parsed

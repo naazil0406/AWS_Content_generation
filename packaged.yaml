@@ -1,0 +1,234 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: "AI Content Generation Service — FastAPI on Lambda behind an HTTP API,\
+  \ via Mangum. Deploy with: sam build && sam deploy --guided\n"
+Globals:
+  Function:
+    Timeout: 120
+    MemorySize: 1024
+    Runtime: python3.11
+    Environment:
+      Variables:
+        LOG_LEVEL: INFO
+Parameters:
+  KnowledgeBaseId:
+    Type: String
+    Description: "ID of the existing Amazon Bedrock Knowledge Base (Bedrock console\
+      \ -> Knowledge Bases -> your KB -> Knowledge base overview). Not a URL.\n"
+  KnowledgeBaseRegion:
+    Type: String
+    Default: us-east-1
+    Description: Region the Bedrock Knowledge Base lives in.
+  ImageProvider:
+    Type: String
+    Default: freepik
+    AllowedValues:
+    - freepik
+    - aws
+    - pollinations
+  FreepikModel:
+    Type: String
+    Default: ''
+    Description: "Empty = Freepik's Mystic endpoint (default, slower ~90-130s). Set\
+      \ to one of flux-dev / hyperflux / seedream-v4 / seedream-v4-5 / seedream-v5-lite\
+      \ to use that model's own faster endpoint instead — see app/services/image_generation_service.py's\
+      \ _FLUX_ENDPOINTS.\n"
+  FreepikFilterNsfw:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+    - 'true'
+    - 'false'
+    Description: Mystic-endpoint-only NSFW filter toggle (ignored by the 
+      Flux/Seedream endpoints above).
+  FreepikMaxConcurrentSubmissions:
+    Type: Number
+    Default: 1
+    Description: Caps simultaneous Freepik submission POSTs per request's 3 
+      images to avoid the gateway collision above. Only the fast submission step
+      is capped — polling/download stay fully parallel.
+  FreepikSubmitMaxRetries:
+    Type: Number
+    Default: 2
+    Description: Extra attempts (beyond the first) for a failed Freepik 
+      submission — recovers from the collision above if it happens despite the 
+      concurrency cap.
+  FreepikSubmitRetryBackoffSeconds:
+    Type: Number
+    Default: 0.75
+    Description: Linear backoff between retry attempts (0.75s, 1.5s, ...).
+  FreepikPollIntervalSeconds:
+    Type: Number
+    Default: 3
+    Description: How often (seconds) the worker polls Freepik for task 
+      completion after submitting.
+  FreepikPollTimeoutSeconds:
+    Type: Number
+    Default: 170
+    Description: "Max seconds the worker waits for Freepik to finish rendering one\
+      \ image before giving up (raises a clean error, not a Lambda hard kill). Must\
+      \ stay comfortably BELOW ContentGenerationFunction's Timeout (below) to leave\
+      \ room for the submit step, image download, and S3 upload that happen after\
+      \ Freepik itself finishes — this value plus roughly 30-40s of margin is what\
+      \ that Timeout should be set to. 170s leaves real margin over Mystic's documented\
+      \ ~90-130s typical latency; the previous 120s default did not.\n"
+  DeploymentPreferenceType:
+    Type: String
+    Default: Canary10Percent5Minutes
+    AllowedValues:
+    - AllAtOnce
+    - Canary10Percent5Minutes
+    - Canary10Percent10Minutes
+    - Canary10Percent15Minutes
+    - Canary10Percent30Minutes
+    - Linear10PercentEvery1Minute
+    - Linear10PercentEvery2Minutes
+    - Linear10PercentEvery3Minutes
+    - Linear10PercentEvery10Minutes
+    Description: "How the \"prod\" alias shifts traffic to each new Lambda version.\
+      \ AllAtOnce = simple immediate cutover (Section A: version + alias, no traffic\
+      \ shifting). Canary/Linear = SAM/CodeDeploy shifts a small percentage of traffic\
+      \ first, watches ProdAliasErrorAlarm below, and automatically shifts prod back\
+      \ to the previous version if it fires before completing the rollout (Section\
+      \ B). Default recommended: Canary10Percent5Minutes — see README's \"Lambda Versioning\
+      \ & Rollback\" section for the full A-vs-B rationale.\n"
+Resources:
+  ContentGenerationApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins:
+        - '*'
+        AllowMethods:
+        - '*'
+        AllowHeaders:
+        - '*'
+  GeneratedImagesBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      LifecycleConfiguration:
+        Rules:
+        - Id: ExpireGeneratedImages
+          Status: Enabled
+          ExpirationInDays: 1
+  ProdAliasErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: "Lambda Errors > 0 for the content_generation function's \"\
+        prod\" alias — triggers CodeDeploy's automatic rollback of the \"prod\" alias\
+        \ while a canary/linear deployment is in progress.\n"
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+      - Name: FunctionName
+        Value:
+          Ref: ContentGenerationFunction
+      - Name: Resource
+        Value:
+          Fn::Sub: ${ContentGenerationFunction}:prod
+  ContentGenerationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: content_generation
+      Handler: app.main.handler
+      CodeUri: 
+        s3://aws-sam-cli-managed-default-samclisourcebucket-qp8xdhplltqz/d9521f4d5d8317c0b5562e28d2defeee
+      Timeout: 210
+      AutoPublishAlias: prod
+      DeploymentPreference:
+        Type:
+          Ref: DeploymentPreferenceType
+        Alarms:
+        - Ref: ProdAliasErrorAlarm
+      Environment:
+        Variables:
+          KNOWLEDGE_BASE_ID:
+            Ref: KnowledgeBaseId
+          KNOWLEDGE_BASE_REGION:
+            Ref: KnowledgeBaseRegion
+          IMAGE_PROVIDER:
+            Ref: ImageProvider
+          FREEPIK_MODEL:
+            Ref: FreepikModel
+          FREEPIK_FILTER_NSFW:
+            Ref: FreepikFilterNsfw
+          FREEPIK_MAX_CONCURRENT_SUBMISSIONS:
+            Ref: FreepikMaxConcurrentSubmissions
+          FREEPIK_SUBMIT_MAX_RETRIES:
+            Ref: FreepikSubmitMaxRetries
+          FREEPIK_SUBMIT_RETRY_BACKOFF_SECONDS:
+            Ref: FreepikSubmitRetryBackoffSeconds
+          FREEPIK_POLL_INTERVAL:
+            Ref: FreepikPollIntervalSeconds
+          FREEPIK_POLL_TIMEOUT:
+            Ref: FreepikPollTimeoutSeconds
+          GENERATED_IMAGES_BUCKET:
+            Ref: GeneratedImagesBucket
+      Policies:
+      - Statement:
+        - Effect: Allow
+          Action:
+          - bedrock:InvokeModel
+          - bedrock:Converse
+          Resource: '*'
+        - Effect: Allow
+          Action:
+          - bedrock:Retrieve
+          Resource:
+            Fn::Sub: 
+              arn:aws:bedrock:${KnowledgeBaseRegion}:${AWS::AccountId}:knowledge-base/${KnowledgeBaseId}
+        - Effect: Allow
+          Action:
+          - s3:PutObject
+          - s3:GetObject
+          Resource:
+            Fn::Sub: ${GeneratedImagesBucket.Arn}/*
+      Events:
+        ApiEvent:
+          Type: HttpApi
+          Properties:
+            ApiId:
+              Ref: ContentGenerationApi
+            Path: /{proxy+}
+            Method: ANY
+        RootEvent:
+          Type: HttpApi
+          Properties:
+            ApiId:
+              Ref: ContentGenerationApi
+            Path: /
+            Method: GET
+    Metadata:
+      SamResourceId: ContentGenerationFunction
+Outputs:
+  ApiUrl:
+    Description: Invoke URL for the Content Generation API
+    Value:
+      Fn::Sub: 
+        https://${ContentGenerationApi}.execute-api.${AWS::Region}.amazonaws.com
+  FunctionArn:
+    Value:
+      Fn::GetAtt:
+      - ContentGenerationFunction
+      - Arn
+  FunctionName:
+    Description: The Lambda function's actual name in AWS
+    Value:
+      Ref: ContentGenerationFunction
+  ProdAliasArn:
+    Description: "The stable \"prod\" alias ARN — this, not the bare FunctionArn above,\
+      \ is what API Gateway actually invokes. Use with `aws lambda update-alias` for\
+      \ manual rollback (see README's Rollback section).\n"
+    Value:
+      Fn::Sub: 
+        arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${ContentGenerationFunction}:prod
+  GeneratedImagesBucketName:
+    Description: S3 bucket storing generated images
+    Value:
+      Ref: GeneratedImagesBucket

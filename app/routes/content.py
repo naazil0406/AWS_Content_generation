@@ -7,6 +7,7 @@ import uuid
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.schemas.content import (
@@ -18,6 +19,7 @@ from app.schemas.content import (
     IMAGE_RESOLUTION_PIXELS,
     DEFAULT_IMAGE_COUNT,
     DEFAULT_IMAGE_RESOLUTION,
+    CheckTopicResponse,
     GenerateContentRequest,
     GenerateContentResponse,
     ImageSettingsResponse,
@@ -38,8 +40,9 @@ from app.services.image_storage_service import (
 from app.services.knowledge_base_service import KnowledgeBaseError, KnowledgeBaseService
 from app.services.llm_service import get_combined_llm
 from app.services.response_builder import build_response
-from app.services import image_ownership_service
-from app.services.session_service import get_or_create_session_id
+from app.services import validation_service
+from app.services.prompt_builder import load_available_industries
+from app.services.validation_service import ValidationError
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -54,6 +57,17 @@ def _build_engine() -> ContentGenerationEngine:
         content_llm=get_content_llm(),
         image_prompt_llm=get_image_prompt_llm(),
     )
+
+
+def _kb_sample_fn():
+    """Passed as validation_service.run_input_validation()'s kb_sample_fn
+    — a broad, generic query (not the user's own, possibly-unrelated one)
+    used ONLY to surface a few real example topics when input fails the
+    meaningful-content-request check (PART 3). "safety topics" matches
+    this app's actual designed domain (every content type/prompt in this
+    project is workplace-safety-training-focused) — adjust this one
+    query if your Knowledge Base covers a different domain."""
+    return KnowledgeBaseService().retrieve("safety topics", top_k=8)
 
 
 @router.get("/content-types")
@@ -183,8 +197,102 @@ def _apply_resolution(resolution):
     return None, warning
 
 
+class CheckTopicRequest(BaseModel):
+    prompt: str = Field(..., min_length=1)
+
+
+@router.post("/check-topic", response_model=CheckTopicResponse)
+def check_topic(request: CheckTopicRequest) -> CheckTopicResponse:
+    """PART 2-5 of the KB-relevance spec: runs input validation +
+    understanding, retrieves Knowledge Base context for the (corrected)
+    prompt, and classifies the match as exact/similar/none — WITHOUT
+    generating any content or images. The frontend calls this FIRST,
+    before /generate or /generate/stream, and only proceeds to actually
+    generate for "exact" matches directly, or "similar" matches after
+    explicit user approval (resending with approved_alternative_topic
+    set) — "none" matches stop here with a warning, no generation call
+    is ever made.
+    """
+    validation_llm = get_combined_llm()
+    corrected_prompt, spelling_warning, intent = validation_service.run_input_validation(
+        validation_llm, request.prompt, kb_sample_fn=_kb_sample_fn,
+    )  # raises ValidationError (400) for empty/special-chars/meaningless/moderation — same as /generate
+
+    # Query the Knowledge Base with kb_search_query — a version of the
+    # prompt that strips ONLY the conversational/instructional wrapper
+    # ("give me an image related to...") while preserving every
+    # substantive concept (subject, action, context, industry, who's
+    # involved). Deliberately NOT the same as intent["topic"] (which can
+    # be a short label like "rushing") — reducing the KB query down to
+    # just the topic word risks losing real semantic information (e.g.
+    # "a woman rushing in healthcare industry" needs "woman"/"healthcare
+    # industry" preserved too, not just "rushing"). Falls back to
+    # intent["topic"], then corrected_prompt, if the LLM didn't populate
+    # kb_search_query for some reason.
+    kb_query = (intent or {}).get("kb_search_query") or (intent or {}).get("topic") or corrected_prompt
+
+    try:
+        kb = KnowledgeBaseService()
+        chunks = kb.retrieve(kb_query)
+    except KnowledgeBaseError as exc:
+        raise HTTPException(status_code=502, detail=f"Knowledge Base error: {exc}")
+
+    # [KB] Diagnostic visibility into exactly what was searched and what
+    # came back — needed because "why did a seemingly-relevant prompt
+    # get classified as no-match" is otherwise unanswerable without
+    # seeing the actual query text and chunk scores, not just guessing.
+    top_scores = sorted(
+        (c.get("score") for c in chunks if isinstance(c.get("score"), (int, float))), reverse=True,
+    )[:5]
+    logger.info(
+        "[KB] check-topic: original_prompt=%r intent_topic=%r kb_query=%r chunks_returned=%d top_scores=%s",
+        request.prompt, (intent or {}).get("topic"), kb_query, len(chunks), top_scores,
+    )
+
+    match = validation_service.classify_kb_match(validation_llm, request.prompt, chunks)
+    logger.info("[KB] check-topic: classification=%s", match)
+
+    if match["match_type"] == "none":
+        base_message = validation_service.get_rule(
+            "KNOWLEDGE_BASE_RELEVANCE", "no_match_warning",
+            "We couldn't find relevant information for your prompt in the knowledge base. Please try another prompt.",
+        )
+        # PART 3: don't leave the user at a dead end — sample a BROAD
+        # slice of the Knowledge Base (a generic query, not the user's
+        # specific/unrelated one) and extract a few real topic names
+        # they could actually ask about instead. Best-effort: if this
+        # sample or extraction fails for any reason, the base message
+        # alone is still a complete, correct response — this only adds
+        # to it, never blocks on it.
+        message = base_message
+        try:
+            sample_chunks = kb.retrieve("safety topics", top_k=8)
+            suggested_topics = validation_service.suggest_kb_topics(validation_llm, sample_chunks)
+            if suggested_topics:
+                message += " Topics you can ask about include: " + ", ".join(suggested_topics) + "."
+        except Exception as exc:  # noqa: BLE001 - suggestions are a nice-to-have, never fatal
+            logger.warning("Failed to sample Knowledge Base for topic suggestions: %s", exc)
+    elif match["match_type"] == "similar":
+        template = validation_service.get_rule(
+            "KNOWLEDGE_BASE_RELEVANCE", "similar_match_prompt_template",
+            "We couldn't find an exact match for your prompt. We found related information about {topic}. "
+            "Would you like us to generate content based on this related topic?",
+        )
+        message = template.format(topic=match["matched_topic"] or "a related topic")
+    else:
+        message = ""  # exact match — frontend proceeds directly, no message needed
+
+    return CheckTopicResponse(
+        match_type=match["match_type"],
+        matched_topic=match.get("matched_topic"),
+        message=message,
+        corrected_prompt=corrected_prompt,
+        spelling_warning=spelling_warning,
+    )
+
+
 @router.post("/generate", response_model=GenerateContentResponse)
-def generate(request: GenerateContentRequest, http_request: Request, http_response: Response) -> GenerateContentResponse:
+def generate(request: GenerateContentRequest) -> GenerateContentResponse:
     """Generate content for the given prompt/content type/industry, and
     — only when request.generate_images is True (the "Generate + Image"
     action) — also generate the requested number of grounded image
@@ -194,15 +302,65 @@ def generate(request: GenerateContentRequest, http_request: Request, http_respon
     this returns content only: the Image Prompt Agent, Freepik, and S3
     image upload are never invoked.
     """
-    engine = _build_engine()
     aspect_ratio, resolution, count = _validate_image_settings(request)
+
+    # Validation pipeline (basic -> special-char -> meaningful -> spelling
+    # -> moderation -> understanding) — runs BEFORE any content/image
+    # generation call, and BEFORE the engine (Knowledge Base client, LLM
+    # clients) is even built, per the explicit "don't call expensive
+    # generation APIs for clearly invalid input" performance requirement.
+    # Raises ValidationError, caught by main.py's exception handler and
+    # turned into {success: false, warning, error_type}.
+    validation_llm = get_combined_llm()
+    # [PERF] available_industries is passed straight into the SAME
+    # validation call below (see analyze_prompt()'s docstring) instead
+    # of a separate suggest_consistent_industry() round trip afterward —
+    # cuts one full sequential LLM call off the happy path, which
+    # matters because this entire chain runs before Freepik/image
+    # rendering even starts, inside API Gateway's fixed ~29s ceiling.
+    corrected_prompt, spelling_warning, intent = validation_service.run_input_validation(
+        validation_llm, request.prompt, kb_sample_fn=_kb_sample_fn,
+        available_industries=list(load_available_industries()),
+    )
+    warnings: List[str] = [spelling_warning] if spelling_warning else []
+    if request.approved_alternative_topic:
+        # PART 5: exact required message format for a user-approved
+        # alternative topic (see POST /api/check-topic — this field is
+        # only ever set after that explicit user approval, never
+        # inferred here).
+        banner_template = validation_service.get_rule(
+            "KNOWLEDGE_BASE_RELEVANCE", "alternative_topic_banner_template",
+            "Showing results related to {topic} since we couldn't find an exact match for your prompt.",
+        )
+        warnings.append(banner_template.format(topic=request.approved_alternative_topic))
+
+    # General (not example-specific) fix for topic/industry mismatch —
+    # see app/services/validation_service.analyze_prompt()'s docstring:
+    # rather than relying solely on prompt_builder.py's hand-curated
+    # per-industry keyword lists (which can never anticipate every
+    # possible topic), the SAME validation LLM call above already asked
+    # whether THIS topic clearly implies one specific industry, for ANY
+    # topic. Only overrides an explicit request.industry if the caller
+    # didn't already provide one; None (from intent) means no override —
+    # existing random/keyword-hint selection in
+    # ContentGenerationEngine.generate() runs unchanged — for genuinely
+    # generic topics like "workplace safety".
+    effective_industry = request.industry or (intent or {}).get("suggested_industry")
+
+    engine = _build_engine()
 
     _request_started = time.monotonic()
     try:
         result = engine.generate(
-            prompt=request.prompt,
+            # corrected_prompt (not request.prompt) drives actual
+            # generation — request.prompt (the true original) remains
+            # available below for the content-relevance check, which
+            # must always judge against what the user actually typed,
+            # not the spelling-corrected version (PART 9: original
+            # prompt is always the source of truth).
+            prompt=corrected_prompt,
             content_type=request.content_type,
-            industry=request.industry,
+            industry=effective_industry,
             generate_images=request.generate_images,
             monthly_topic_content=request.monthly_topic_content,
             common_data=request.common_data,
@@ -216,6 +374,41 @@ def generate(request: GenerateContentRequest, http_request: Request, http_respon
             # (3) applies in that case, same default as before.
             image_count=count or DEFAULT_IMAGE_COUNT,
         )
+
+        # Content relevance check (PART 10) — one bounded retry with a
+        # stricter regeneration instruction if the first attempt drifted
+        # off-topic. Judged against request.prompt (the TRUE original),
+        # never corrected_prompt, per PART 9.
+        if not validation_service.check_content_relevance(validation_llm, request.prompt, result["content_text"]):
+            warnings.append(
+                "⚠️ The generated content does not sufficiently match your request. "
+                "Regenerating based on your original prompt."
+            )
+            retry_prompt = corrected_prompt + validation_service.STRICT_REGENERATION_SUFFIX
+            result = engine.generate(
+                prompt=retry_prompt,
+                content_type=request.content_type,
+                industry=effective_industry,
+                generate_images=request.generate_images,
+                monthly_topic_content=request.monthly_topic_content,
+                common_data=request.common_data,
+                web_results=request.web_results,
+                avoid_repeating=request.avoid_repeating,
+                image_count=count or DEFAULT_IMAGE_COUNT,
+            )
+            # PART 16: "if the retry still fails, return a clear warning
+            # instead of an unrelated result" — the previous version of
+            # this code used the retry's output unconditionally, with no
+            # second check. Retry limit is exhausted after this one
+            # attempt either way (no loop) — the difference is now the
+            # user is honestly told the result may still not fully match,
+            # rather than the mismatch being silently presented as if it
+            # were resolved.
+            if not validation_service.check_content_relevance(validation_llm, request.prompt, result["content_text"]):
+                warnings.append(
+                    "⚠️ The regenerated content still may not fully match your request. "
+                    "Consider rephrasing your prompt with a more specific topic."
+                )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except KnowledgeBaseError as exc:
@@ -234,14 +427,17 @@ def generate(request: GenerateContentRequest, http_request: Request, http_respon
     if not request.generate_images:
         # "Generate" action: content-only response. No image prompts, no
         # SQS messages, no Freepik, no S3 — exactly as before.
-        return build_response(result, [])
+        response = build_response(result, [])
+        response.warnings = warnings
+        return response
 
     # Graceful degradation for a resolution the currently configured
     # provider/model can't actually honor (see _apply_resolution() /
     # resolution_support_status()) — never an error, just dropped for
     # this call with a note surfaced in the response's warnings field.
     resolution_for_call, resolution_warning = _apply_resolution(resolution)
-    warnings = [resolution_warning] if resolution_warning else []
+    if resolution_warning:
+        warnings.append(resolution_warning)
 
     # Existing Image Prompt Agent logic — completely unchanged. It still
     # always produces exactly 3 distinct prompts (see
@@ -253,6 +449,46 @@ def generate(request: GenerateContentRequest, http_request: Request, http_respon
     render_prompts = resolve_prompts_for_count(result["image_prompts"], count)
     render_anchors = resolve_prompts_for_count(result.get("content_anchors") or [], count)
     result = {**result, "image_prompts": render_prompts, "content_anchors": render_anchors}
+
+    # [PERF]/diagnostic: the actual text about to be sent to Freepik —
+    # needed to verify explicit persona/demographic/detail requirements
+    # from the user's prompt (e.g. "a woman") actually survived into the
+    # image prompt, since that's invisible otherwise until the rendered
+    # image itself.
+    logger.info("[IMG] initial image_prompts: %s", render_prompts)
+
+    # Image PROMPT relevance check (PART 9/13 of the spec) — checked
+    # against the actual TEXT about to be sent to Freepik, BEFORE
+    # spending time/money rendering it. This is not a check of rendered
+    # pixels (no vision-model call exists here — see
+    # validation_service.py's module docstring), but it directly catches
+    # the documented failure mode where content stays on-topic while the
+    # image prompt drifts (e.g. into a generic office/industry scene)
+    # — one bounded retry, same pattern as the content-relevance check.
+    if not validation_service.check_image_prompt_relevance(validation_llm, request.prompt, result["content_text"], render_prompts):
+        warnings.append(
+            "⚠️ The generated image does not sufficiently match your request. Regenerating based on your original prompt."
+        )
+        retry_prompt = corrected_prompt + validation_service.STRICT_REGENERATION_SUFFIX
+        result = engine.generate(
+            prompt=retry_prompt,
+            content_type=request.content_type,
+            industry=effective_industry,
+            generate_images=request.generate_images,
+            monthly_topic_content=request.monthly_topic_content,
+            common_data=request.common_data,
+            web_results=request.web_results,
+            avoid_repeating=request.avoid_repeating,
+            image_count=count or DEFAULT_IMAGE_COUNT,
+        )
+        render_prompts = resolve_prompts_for_count(result["image_prompts"], count)
+        render_anchors = resolve_prompts_for_count(result.get("content_anchors") or [], count)
+        result = {**result, "image_prompts": render_prompts, "content_anchors": render_anchors}
+        if not validation_service.check_image_prompt_relevance(validation_llm, request.prompt, result["content_text"], render_prompts):
+            warnings.append(
+                "⚠️ The regenerated image may still not fully match your request. "
+                "Consider rephrasing your prompt with a more specific topic."
+            )
 
     # All 1-3 images render inline, synchronously, in this same Lambda
     # invocation — no SQS, no second invocation, no queue drift to
@@ -291,11 +527,9 @@ def generate(request: GenerateContentRequest, http_request: Request, http_respon
     )
 
     # Minted here (not inside upload_images_to_s3, which used to
-    # generate its own if omitted) so this route can record WHICH
-    # session generated these images (see image_ownership_service.py) —
-    # needed by the Canva "Edit in Canva" flow (app/routes/canva.py) to
-    # verify a later selection actually belongs to the requesting
-    # session, not just any generation_id someone might guess/reuse.
+    # generate its own if omitted) so callers get a stable identifier
+    # for this specific generation, tying together images[i] with index
+    # i under this generation_id.
     generation_id = uuid.uuid4().hex
 
     _s3_upload_started = time.monotonic()
@@ -308,9 +542,6 @@ def generate(request: GenerateContentRequest, http_request: Request, http_respon
         logger.error("Image upload to S3 failed: %s", exc)
         raise HTTPException(status_code=502, detail=f"Image upload failed: {exc}")
     logger.info("[PERF] S3 upload (%d image(s)): %.1fs", len(images), time.monotonic() - _s3_upload_started)
-
-    session_id = get_or_create_session_id(http_request, http_response)
-    image_ownership_service.record_generation(session_id, generation_id, len(image_urls))
 
     response = build_response(result, image_urls)
     response.warnings = warnings
@@ -387,7 +618,7 @@ def _sse(event: str, data: dict) -> str:
 
 
 @router.post("/generate/stream")
-def generate_stream(request: GenerateContentRequest, http_request: Request, http_response: Response):
+def generate_stream(request: GenerateContentRequest):
     """Same pipeline as POST /generate (KB retrieve -> combined Nova Lite
     call -> N parallel image renders -> S3 upload), but streamed as
     Server-Sent Events so a frontend can show live per-image progress
@@ -420,13 +651,33 @@ def generate_stream(request: GenerateContentRequest, http_request: Request, http
     """
     start = time.monotonic()
     aspect_ratio, resolution, requested_count = _validate_image_settings(request)
-    # Resolved once, up front, outside the generator — get_or_create_session_id
-    # needs the REAL request/response objects FastAPI injected, and the
-    # cookie it sets must be forwarded onto the actual StreamingResponse
-    # returned at the bottom of this function (a plain Response object's
-    # Set-Cookie header is otherwise silently dropped, same issue as in
-    # app/routes/canva.py's /connect and /callback).
-    session_id = get_or_create_session_id(http_request, http_response)
+
+    # Validation pipeline — same as POST /generate (see that route's
+    # identical block for full rationale). Runs BEFORE the SSE stream
+    # even starts: on rejection, ValidationError propagates out of this
+    # synchronous section and is caught by main.py's exception handler,
+    # returning a normal {success: false, warning, error_type} JSON
+    # response instead of ever opening an event stream — there is
+    # nothing to stream progress for on rejected input.
+    validation_llm = get_combined_llm()
+    # [PERF] See POST /generate's identical block — available_industries
+    # is folded into this SAME validation call instead of a separate
+    # suggest_consistent_industry() round trip, cutting one sequential
+    # LLM call off the happy path.
+    corrected_prompt, spelling_warning, intent = validation_service.run_input_validation(
+        validation_llm, request.prompt, kb_sample_fn=_kb_sample_fn,
+        available_industries=list(load_available_industries()),
+    )
+    stream_warnings: List[str] = [spelling_warning] if spelling_warning else []
+    if request.approved_alternative_topic:
+        banner_template = validation_service.get_rule(
+            "KNOWLEDGE_BASE_RELEVANCE", "alternative_topic_banner_template",
+            "Showing results related to {topic} since we couldn't find an exact match for your prompt.",
+        )
+        stream_warnings.append(banner_template.format(topic=request.approved_alternative_topic))
+
+    # See POST /generate's identical block for full rationale.
+    effective_industry = request.industry or (intent or {}).get("suggested_industry")
 
     def event_stream():
         try:
@@ -436,9 +687,12 @@ def generate_stream(request: GenerateContentRequest, http_request: Request, http
             yield _sse("stage", {"stage": "generating_content"})
             try:
                 result = engine.generate(
-                    prompt=request.prompt,
+                    # corrected_prompt drives generation; request.prompt
+                    # (true original) is what the relevance check below
+                    # judges against — see PART 9.
+                    prompt=corrected_prompt,
                     content_type=request.content_type,
-                    industry=request.industry,
+                    industry=effective_industry,
                     generate_images=request.generate_images,
                     monthly_topic_content=request.monthly_topic_content,
                     common_data=request.common_data,
@@ -449,6 +703,37 @@ def generate_stream(request: GenerateContentRequest, http_request: Request, http
                     # image_count; DEFAULT_IMAGE_COUNT (3) applies then.
                     image_count=requested_count or DEFAULT_IMAGE_COUNT,
                 )
+
+                # Content relevance check (PART 10) — one bounded retry,
+                # same as POST /generate.
+                if not validation_service.check_content_relevance(validation_llm, request.prompt, result["content_text"]):
+                    relevance_warning = (
+                        "⚠️ The generated content does not sufficiently match your request. "
+                        "Regenerating based on your original prompt."
+                    )
+                    stream_warnings.append(relevance_warning)
+                    yield _sse("warning", {"message": relevance_warning})
+                    result = engine.generate(
+                        prompt=corrected_prompt + validation_service.STRICT_REGENERATION_SUFFIX,
+                        content_type=request.content_type,
+                        industry=effective_industry,
+                        generate_images=request.generate_images,
+                        monthly_topic_content=request.monthly_topic_content,
+                        common_data=request.common_data,
+                        web_results=request.web_results,
+                        avoid_repeating=request.avoid_repeating,
+                        image_count=requested_count or DEFAULT_IMAGE_COUNT,
+                    )
+                    # PART 16: check the retry too — see the identical
+                    # fix/comment in POST /generate above for why this
+                    # was missing before.
+                    if not validation_service.check_content_relevance(validation_llm, request.prompt, result["content_text"]):
+                        still_mismatched_warning = (
+                            "⚠️ The regenerated content still may not fully match your request. "
+                            "Consider rephrasing your prompt with a more specific topic."
+                        )
+                        stream_warnings.append(still_mismatched_warning)
+                        yield _sse("warning", {"message": still_mismatched_warning})
             except (ValueError, KnowledgeBaseError, ContentGenerationError) as exc:
                 yield _sse("error", {"message": str(exc)})
                 return
@@ -472,6 +757,7 @@ def generate_stream(request: GenerateContentRequest, http_request: Request, http
                 # "Generate" action: content-only — no Image Prompt Agent,
                 # no Freepik, no S3. Finish the stream right here.
                 response = build_response(result, [])
+                response.warnings = stream_warnings
                 yield _sse("done", response.model_dump())
                 return
 
@@ -488,7 +774,6 @@ def generate_stream(request: GenerateContentRequest, http_request: Request, http
             # stream-ending error; surfaced as a "warning" SSE event and
             # in the final "done" payload's warnings field.
             resolution_for_call, resolution_warning = _apply_resolution(resolution)
-            stream_warnings = []
             if resolution_warning:
                 stream_warnings.append(resolution_warning)
                 yield _sse("warning", {"message": resolution_warning})
@@ -500,7 +785,39 @@ def generate_stream(request: GenerateContentRequest, http_request: Request, http
             # shows the full 3 regardless).
             render_prompts = resolve_prompts_for_count(result["image_prompts"], requested_count)
             render_anchors = resolve_prompts_for_count(result.get("content_anchors") or [], requested_count)
+            logger.info("[IMG] initial image_prompts: %s", render_prompts)
             result = {**result, "image_prompts": render_prompts, "content_anchors": render_anchors}
+
+            # Image PROMPT relevance check — same as POST /generate, see
+            # that route's identical block for full rationale.
+            if not validation_service.check_image_prompt_relevance(validation_llm, request.prompt, result["content_text"], render_prompts):
+                image_relevance_warning = (
+                    "⚠️ The generated image does not sufficiently match your request. "
+                    "Regenerating based on your original prompt."
+                )
+                stream_warnings.append(image_relevance_warning)
+                yield _sse("warning", {"message": image_relevance_warning})
+                result = engine.generate(
+                    prompt=corrected_prompt + validation_service.STRICT_REGENERATION_SUFFIX,
+                    content_type=request.content_type,
+                    industry=effective_industry,
+                    generate_images=request.generate_images,
+                    monthly_topic_content=request.monthly_topic_content,
+                    common_data=request.common_data,
+                    web_results=request.web_results,
+                    avoid_repeating=request.avoid_repeating,
+                    image_count=requested_count or DEFAULT_IMAGE_COUNT,
+                )
+                render_prompts = resolve_prompts_for_count(result["image_prompts"], requested_count)
+                render_anchors = resolve_prompts_for_count(result.get("content_anchors") or [], requested_count)
+                result = {**result, "image_prompts": render_prompts, "content_anchors": render_anchors}
+                if not validation_service.check_image_prompt_relevance(validation_llm, request.prompt, result["content_text"], render_prompts):
+                    still_mismatched_image_warning = (
+                        "⚠️ The regenerated image may still not fully match your request. "
+                        "Consider rephrasing your prompt with a more specific topic."
+                    )
+                    stream_warnings.append(still_mismatched_image_warning)
+                    yield _sse("warning", {"message": still_mismatched_image_warning})
 
             # All 1-3 images render inline via generate_variations_events(),
             # which already runs each image on its own thread and yields
@@ -554,7 +871,6 @@ def generate_stream(request: GenerateContentRequest, http_request: Request, http
                 })
 
             ordered_urls = [image_urls[i] for i in sorted(image_urls)]
-            image_ownership_service.record_generation(session_id, generation_id, len(ordered_urls))
             response = build_response(result, ordered_urls)
             response.warnings = stream_warnings
             response.generation_id = generation_id
@@ -565,12 +881,8 @@ def generate_stream(request: GenerateContentRequest, http_request: Request, http
             logger.exception("Unexpected error during streamed content generation.")
             yield _sse("error", {"message": f"Unexpected error: {exc}"})
 
-    stream_response = StreamingResponse(
+    return StreamingResponse(
         event_stream(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
-    for key, value in http_response.headers.items():
-        if key.lower() == "set-cookie":
-            stream_response.headers.append(key, value)
-    return stream_response

@@ -29,8 +29,21 @@ Parameters:
     AllowedValues: [freepik, aws, pollinations]
   FreepikApiKey:
     Type: String
-    NoEcho: true
     Default: ""
+    NoEcho: true
+    Description: >
+      Freepik API key. NoEcho hides it from CloudFormation console/CLI
+      output and events, but does NOT encrypt it at rest in the
+      Lambda's environment variables — anyone with lambda:GetFunctionConfiguration
+      on this function can still read it back in plaintext. This was
+      previously removed after hitting a persistent "ParameterValue ...
+      contains invalid characters" error — that error was very likely
+      caused by HOW the value was being passed on the command line/in
+      samconfig.toml (API keys often contain characters like +, /, =
+      that break naive space-separated "KEY=VALUE KEY2=VALUE2" parsing),
+      not by anything wrong with the key itself or this Parameter
+      definition. See the deploy command below this template for the
+      correct way to pass it without hitting that again.
   # These were previously NOT wired into the Lambda's environment at
   # all — local .env could set them, but the deployed Lambda silently
   # always used config.py's Python defaults regardless of local config,
@@ -191,10 +204,10 @@ Resources:
       # images now render synchronously, in parallel threads, within
       # this same invocation (see app/services/image_generation_service.py
       # generate_variations()) — no SQS, no second invocation. Note that
-      # API Gateway HTTP API itself hard-caps a Lambda proxy integration
-      # at ~29-30s regardless of this value, so raising this Timeout
-      # does NOT let a multi-image request exceed that ceiling — it
-      # only matters for direct Lambda invokes (e.g. local testing via
+      # API Gateway HTTP API hard-caps a Lambda proxy integration at
+      # ~29-30s regardless of this value, so raising this Timeout does
+      # not let a multi-image request exceed that ceiling — it only
+      # matters for direct Lambda invokes (e.g. local testing via
       # `sam local invoke`) or if you later front this with something
       # other than API Gateway HTTP API.
       Timeout: 210
@@ -223,10 +236,6 @@ Resources:
           FREEPIK_MAX_CONCURRENT_SUBMISSIONS: !Ref FreepikMaxConcurrentSubmissions
           FREEPIK_SUBMIT_MAX_RETRIES: !Ref FreepikSubmitMaxRetries
           FREEPIK_SUBMIT_RETRY_BACKOFF_SECONDS: !Ref FreepikSubmitRetryBackoffSeconds
-          # Previously NOT SET HERE AT ALL — only a Python default in
-          # config.py, meaning no deployment could tune it without a
-          # code change. See FreepikPollTimeoutSeconds's description in
-          # Parameters above for why the default itself also changed.
           FREEPIK_POLL_INTERVAL: !Ref FreepikPollIntervalSeconds
           FREEPIK_POLL_TIMEOUT: !Ref FreepikPollTimeoutSeconds
           GENERATED_IMAGES_BUCKET: !Ref GeneratedImagesBucket

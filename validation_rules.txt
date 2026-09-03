@@ -1,0 +1,81 @@
+# ==================================================================
+# VALIDATION RULES CONFIGURATION
+# ==================================================================
+# Edit this file to change validation behavior WITHOUT touching any
+# Python code. Loaded by app/services/validation_service.py at
+# startup (and re-read on each request in local dev, since uvicorn
+# --reload restarts the process on code changes but this file can be
+# hot-edited — see load_rules()'s docstring for exact reload behavior).
+#
+# FORMAT: sections in [BRACKETS], "key = value" lines beneath each.
+# Multi-line values: indent continuation lines with at least one space;
+# they are joined with a single space. Lines starting with # are
+# comments and ignored. Do not remove section/key names themselves
+# (the app looks them up by name) — only edit the VALUES.
+# ==================================================================
+
+[EMPTY_INPUT]
+warning = Please enter a prompt before generating content.
+
+[SPECIAL_CHARACTERS]
+# Applies only when the ENTIRE prompt has no letters or digits at all
+# (e.g. "@", "!!!", "@#$%"). Prompts that mix punctuation with real
+# words (e.g. "AI & Cybersecurity", "COVID-19 safety") are never
+# affected by this rule.
+warning = ⚠️ Invalid prompt: Special characters alone are not allowed. Please enter meaningful words.
+
+[NUMBERS_ONLY]
+# Applies only when the ENTIRE prompt is digits (e.g. "123456", "2026",
+# "5"). Numbers inside a meaningful prompt ("Create 5 safety tips") are
+# never affected by this rule.
+warning = ⚠️ Invalid prompt: Numbers alone are not a meaningful content request. Please describe what you'd like created.
+
+[MEANINGFUL_WORDS]
+# Covers keyboard-mash (asdfgh, qwerty), single-repeated-character runs
+# (aaaaaaa, zzzzzzz), immediately-repeated-substring input
+# (testtesttest), generic greetings/small talk ("hello", "thanks", "ok")
+# that name no topic, and anything else the LLM-based semantic check
+# judges to specify no identifiable subject/topic — see
+# app/services/validation_service.py's _ANALYSIS_SYSTEM_PROMPT for the
+# full, generalized (never hardcoded to one example) definition.
+warning = Please provide a specific topic or content-generation request.
+fallback_examples = For example: "Create an infographic about [topic]", "Create a poster about [topic]", "Create [number] tips about [topic]", or "Create a safety awareness campaign about [topic]".
+
+[SPELLING]
+warning_prefix = ⚠️ Spelling corrections were made:
+
+[CONTENT_MODERATION]
+# Shown for ANY blocked request — harmful, dangerous, sexual/explicit,
+# or otherwise disallowed content (see PROMPT_UNDERSTANDING_AND_MODERATION_SYSTEM_PROMPT
+# in validation_service.py for the actual category list given to the
+# model; this file only controls the user-facing MESSAGE, not the
+# detection logic itself, which must stay in code/the model to remain
+# resistant to obfuscation).
+warning = This request cannot be processed because it contains content that is not allowed.
+
+[CONTENT_RELEVANCE]
+first_failure_warning = ⚠️ The generated content does not sufficiently match your request. Regenerating based on your original prompt.
+retry_failure_warning = ⚠️ The regenerated content still may not fully match your request. Consider rephrasing your prompt with a more specific topic.
+max_retries = 1
+
+[IMAGE_RELEVANCE]
+retry_failure_warning = ⚠️ The generated image may not fully match your request.
+max_retries = 1
+
+[KNOWLEDGE_BASE_RELEVANCE]
+# Thresholds/messages for the exact / similar / no-match classification
+# (see validation_service.classify_kb_match()). similar_match_score_floor
+# is a Bedrock Knowledge Base relevance score (0.0-1.0) BELOW which a
+# result is never even offered as a "similar" match, regardless of what
+# the LLM judgment says — a pure sanity floor, not the primary decision
+# mechanism (the LLM classification is).
+similar_match_score_floor = 0.35
+similar_match_prompt_template = We couldn't find an exact match for your prompt. We found related information about {topic}. Would you like us to generate content based on this related topic?
+alternative_topic_banner_template = Showing results related to {topic} since we couldn't find an exact match for your prompt.
+no_match_warning = We couldn't find relevant information for your prompt in the knowledge base. Please try another prompt.
+
+[RETRY_LIMITS]
+# Applies to BOTH content-relevance and image-relevance regeneration —
+# one bounded retry each, never an unbounded/infinite loop.
+max_content_relevance_retries = 1
+max_image_relevance_retries = 1

@@ -17,20 +17,20 @@ a separate S3/CloudFront setup and any CORS configuration.
 
 # Deploy marker (no functional effect) — bump this comment to force SAM
 # to detect a code change and publish a new Lambda version.
-# build: 2026-08-20-01
+# build: 2026-09-02-01
 
 import logging
 import os
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from mangum import Mangum
 
 from app.routes import content
-from app.routes import canva
 from app.services.knowledge_base_service import KnowledgeBaseError, KnowledgeBaseService
+from app.services.validation_service import ValidationError
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -83,7 +83,23 @@ app.add_middleware(
 )
 
 app.include_router(content.router, prefix="/api")
-app.include_router(canva.router, prefix="/api/canva")
+
+
+@app.exception_handler(ValidationError)
+def _validation_error_handler(request: Request, exc: ValidationError) -> JSONResponse:
+    """Turns a rejected/moderated prompt into exactly the structured
+    shape the frontend expects: {success: false, warning, error_type} —
+    at the TOP LEVEL of the JSON body (not nested under "detail", the
+    way a raised HTTPException would put it), per the project's explicit
+    API contract for validation failures. Never generates content or
+    images for these — this handler fires before any generation attempt
+    reaches the LLM/image provider, since app/routes/content.py raises
+    ValidationError from the validation pipeline before calling
+    engine.generate()."""
+    return JSONResponse(
+        status_code=400,
+        content={"success": False, "warning": exc.warning, "error_type": exc.error_type},
+    )
 
 _FRONTEND_PATH = Path(__file__).resolve().parent.parent / "frontend" / "index.html"
 
