@@ -607,6 +607,70 @@ def regenerate_image(request: RegenerateImageRequest) -> RegenerateImageResponse
     return RegenerateImageResponse(url=url)
 
 
+@router.post("/regenerate-image/stream")
+def regenerate_image_stream(request: RegenerateImageRequest):
+    """SSE variant of POST /regenerate-image, added alongside it (that
+    route is untouched and still works exactly as before for any
+    existing caller). Reuses the exact same validation and
+    generate_variations_events()/S3 upload logic as
+    POST /generate/stream's image phase — no new business logic, just
+    the same event-shaped wrapper applied to a single-image regenerate.
+
+    Event sequence:
+        image_progress   {"status": "submitted"|"polling"|"downloading", "detail": {...}}
+        image_ready      {"url": "..."}
+        error            {"message": "..."}   -- terminal
+    """
+    aspect_ratio = request.image_aspect_ratio
+    if aspect_ratio is not None and aspect_ratio not in IMAGE_ASPECT_RATIOS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid image_aspect_ratio '{aspect_ratio}'. Must be one of: "
+            f"{', '.join(IMAGE_ASPECT_RATIOS)}.",
+        )
+    resolution = request.image_resolution
+    if resolution is not None and resolution not in IMAGE_RESOLUTIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid image_resolution '{resolution}'. Must be one of: "
+            f"{', '.join(IMAGE_RESOLUTIONS)}.",
+        )
+    resolution_for_call, resolution_warning = _apply_resolution(resolution)
+
+    def event_stream():
+        try:
+            if resolution_warning:
+                yield _sse("warning", {"message": resolution_warning})
+            for event in generate_variations_events(
+                prompts=[request.image_prompt],
+                negative_prompt=request.negative_prompt or "",
+                aspect_ratio=aspect_ratio,
+                resolution=resolution_for_call,
+            ):
+                if event["type"] == "progress":
+                    yield _sse("image_progress", {"status": event["status"], "detail": event["detail"]})
+                elif event["type"] == "image":
+                    try:
+                        import uuid as _uuid
+                        url = upload_single_image_to_s3(event["bytes"], _uuid.uuid4().hex, 0)
+                        yield _sse("image_ready", {"url": url})
+                    except Exception as exc:  # noqa: BLE001
+                        yield _sse("error", {"message": f"Upload failed: {exc}"})
+                        return
+                elif event["type"] == "failed":
+                    yield _sse("error", {"message": event["error"]})
+                    return
+        except Exception as exc:  # noqa: BLE001 - last-resort so the stream always closes cleanly
+            logger.exception("Unexpected error during streamed image regeneration.")
+            yield _sse("error", {"message": f"Unexpected error: {exc}"})
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 def _sse(event: str, data: dict) -> str:
     """Format one Server-Sent Event. Each event is `event: <name>` plus
     a single `data: <json>` line, terminated by a blank line — SSE's

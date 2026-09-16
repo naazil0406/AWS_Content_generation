@@ -1,12 +1,17 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: >
-  AI Content Generation Service — FastAPI on Lambda behind an HTTP API,
-  via Mangum. Deploy with: sam build && sam deploy --guided
+  Asset Generation Service — FastAPI on Lambda behind an HTTP API, via
+  Mangum. Independent stack, new resources, no dependency on
+  content-generation-stack. This intentionally matches the simple,
+  proven-working pattern (no raw REST API, no Web Adapter/run.sh, no
+  streaming) after repeated AWS::EarlyValidation::PropertyValidation
+  failures on more complex variants of this template.
+  Deploy: sam build && sam deploy --guided
 
 Globals:
   Function:
-    Timeout: 120
+    Timeout: 210
     MemorySize: 1024
     Runtime: python3.11
     Environment:
@@ -16,113 +21,36 @@ Globals:
 Parameters:
   KnowledgeBaseId:
     Type: String
-    Description: >
-      ID of the existing Amazon Bedrock Knowledge Base (Bedrock console ->
-      Knowledge Bases -> your KB -> Knowledge base overview). Not a URL.
+    Description: ID of the existing Amazon Bedrock Knowledge Base. Not a URL.
   KnowledgeBaseRegion:
     Type: String
     Default: us-east-1
-    Description: Region the Bedrock Knowledge Base lives in.
   ImageProvider:
     Type: String
     Default: freepik
     AllowedValues: [freepik, aws, pollinations]
-  FreepikApiKey:
-    Type: String
-    Default: ""
-    NoEcho: true
-    Description: >
-      Freepik API key. NoEcho hides it from CloudFormation console/CLI
-      output and events, but does NOT encrypt it at rest in the
-      Lambda's environment variables — anyone with lambda:GetFunctionConfiguration
-      on this function can still read it back in plaintext. This was
-      previously removed after hitting a persistent "ParameterValue ...
-      contains invalid characters" error — that error was very likely
-      caused by HOW the value was being passed on the command line/in
-      samconfig.toml (API keys often contain characters like +, /, =
-      that break naive space-separated "KEY=VALUE KEY2=VALUE2" parsing),
-      not by anything wrong with the key itself or this Parameter
-      definition. See the deploy command below this template for the
-      correct way to pass it without hitting that again.
-  # These were previously NOT wired into the Lambda's environment at
-  # all — local .env could set them, but the deployed Lambda silently
-  # always used config.py's Python defaults regardless of local config,
-  # a real local/deployed divergence risk. Defaults here match config.py
-  # exactly, so leaving all of these unset still deploys identically to
-  # before; they're only useful if you want to override one without a
-  # code change.
   FreepikModel:
     Type: String
     Default: ""
-    Description: >
-      Empty = Freepik's Mystic endpoint (default, slower ~90-130s). Set to
-      one of flux-dev / hyperflux / seedream-v4 / seedream-v4-5 /
-      seedream-v5-lite to use that model's own faster endpoint instead —
-      see app/services/image_generation_service.py's _FLUX_ENDPOINTS.
-  # NOTE: FreepikResolution / ImageWidth / ImageHeight used to live here
-  # as deployment-wide CloudFormation Parameters — every request got
-  # whatever the deployed stack was configured with, with no way for two
-  # different requests to choose differently. They're now per-request
-  # choices instead: GenerateContentRequest.image_aspect_ratio /
-  # .image_resolution (see app/schemas/content.py and
-  # app/routes/content.py's GET /image-settings) flow straight into
-  # app/services/image_generation_service.py's get_image_gen_service()
-  # for that one call only. config.py's IMAGE_WIDTH/IMAGE_HEIGHT/
-  # FREEPIK_RESOLUTION Python defaults (1024/1024/"2k") are still the
-  # SAFE DEFAULT used whenever a request omits one — see
-  # get_image_gen_service()'s docstring — they just no longer come from
-  # a deploy-time parameter here, so there's nothing left to fix for the
-  # whole stack at once. If you need to change the safe default itself,
-  # edit app/config.py directly (a code change, same as any other
-  # default) rather than a deploy parameter.
   FreepikFilterNsfw:
     Type: String
     Default: "true"
     AllowedValues: ["true", "false"]
-    Description: Mystic-endpoint-only NSFW filter toggle (ignored by the Flux/Seedream endpoints above).
-  # Fix for the 401/422 Freepik errors: observed in production, near-
-  # simultaneous parallel image submissions from the same API key/plan
-  # collided at Freepik's gateway, surfacing as DIFFERENT error codes
-  # (401 on one request, 422 on another) for otherwise-identical
-  # requests at the same millisecond — the signature of a race, not a
-  # deterministic config problem. See
-  # app/services/image_generation_service.py's _submit_with_retry() and
-  # _submit_semaphore for the fix. Defaults below reproduce exactly what
-  # ships even if you never touch these parameters.
   FreepikMaxConcurrentSubmissions:
     Type: Number
     Default: 1
-    Description: Caps simultaneous Freepik submission POSTs per request's 3 images to avoid the gateway collision above. Only the fast submission step is capped — polling/download stay fully parallel.
   FreepikSubmitMaxRetries:
     Type: Number
     Default: 2
-    Description: Extra attempts (beyond the first) for a failed Freepik submission — recovers from the collision above if it happens despite the concurrency cap.
   FreepikSubmitRetryBackoffSeconds:
     Type: Number
     Default: 0.75
-    Description: Linear backoff between retry attempts (0.75s, 1.5s, ...).
-  # These two were PREVIOUSLY NOT EXPOSED HERE AT ALL — only a Python
-  # default in app/config.py (FREEPIK_POLL_TIMEOUT was 120.0, which sat
-  # INSIDE Mystic's documented ~90-130s real-world latency range rather
-  # than safely above it, causing legitimate successful renders to be
-  # cut off and reported as failures). Now deploy-time tunable without a
-  # code change.
   FreepikPollIntervalSeconds:
     Type: Number
     Default: 3
-    Description: How often (seconds) the worker polls Freepik for task completion after submitting.
   FreepikPollTimeoutSeconds:
     Type: Number
     Default: 170
-    Description: >
-      Max seconds the worker waits for Freepik to finish rendering one
-      image before giving up (raises a clean error, not a Lambda hard
-      kill). Must stay comfortably BELOW ContentGenerationFunction's
-      Timeout (below) to leave room for the submit step, image download,
-      and S3 upload that happen after Freepik itself finishes — this
-      value plus roughly 30-40s of margin is what that Timeout should be
-      set to. 170s leaves real margin over Mystic's documented ~90-130s
-      typical latency; the previous 120s default did not.
   DeploymentPreferenceType:
     Type: String
     Default: Canary10Percent5Minutes
@@ -136,18 +64,9 @@ Parameters:
       - Linear10PercentEvery2Minutes
       - Linear10PercentEvery3Minutes
       - Linear10PercentEvery10Minutes
-    Description: >
-      How the "prod" alias shifts traffic to each new Lambda version.
-      AllAtOnce = simple immediate cutover (Section A: version + alias,
-      no traffic shifting). Canary/Linear = SAM/CodeDeploy shifts a small
-      percentage of traffic first, watches ProdAliasErrorAlarm below, and
-      automatically shifts prod back to the previous version if it fires
-      before completing the rollout (Section B). Default recommended:
-      Canary10Percent5Minutes — see README's "Lambda Versioning &
-      Rollback" section for the full A-vs-B rationale.
 
 Resources:
-  ContentGenerationApi:
+  AssetGenerationApi:
     Type: AWS::Serverless::HttpApi
     Properties:
       CorsConfiguration:
@@ -155,8 +74,6 @@ Resources:
         AllowMethods: ["*"]
         AllowHeaders: ["*"]
 
-  # Name for the S3 bucket that stores generated images. Must be
-  # globally unique across all AWS accounts.
   GeneratedImagesBucket:
     Type: AWS::S3::Bucket
     Properties:
@@ -164,22 +81,15 @@ Resources:
         Rules:
           - Id: ExpireGeneratedImages
             Status: Enabled
-            ExpirationInDays: 1   # presigned URLs only last S3_PRESIGNED_URL_EXPIRY seconds anyway
+            ExpirationInDays: 1
 
-  # Watched by DeploymentPreference below during a canary/linear rollout.
-  # If invocations of the "prod" alias error out while a canary/linear
-  # deployment is shifting traffic to a new version, CodeDeploy
-  # automatically shifts the "prod" alias back to the previous version —
-  # no manual action, no rebuild. Scoped to the alias (Resource:
-  # <function>:prod), not the whole function, so it only reflects
-  # traffic actually going through "prod".
   ProdAliasErrorAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmDescription: >
-        Lambda Errors > 0 for the content_generation function's "prod"
-        alias — triggers CodeDeploy's automatic rollback of the "prod"
-        alias while a canary/linear deployment is in progress.
+        Lambda Errors > 0 for asset_generation's "prod" alias — triggers
+        CodeDeploy's automatic rollback while a canary/linear deployment
+        is in progress.
       Namespace: AWS/Lambda
       MetricName: Errors
       Statistic: Sum
@@ -190,36 +100,17 @@ Resources:
       TreatMissingData: notBreaching
       Dimensions:
         - Name: FunctionName
-          Value: !Ref ContentGenerationFunction
+          Value: !Ref AssetGenerationFunction
         - Name: Resource
-          Value: !Sub "${ContentGenerationFunction}:prod"
+          Value: !Sub "${AssetGenerationFunction}:prod"
 
-  ContentGenerationFunction:
+  AssetGenerationFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: content_generation
+      FunctionName: asset_generation
       Handler: app.main.handler
       CodeUri: .
-      # Overrides Globals.Function.Timeout (120). All 1-3 requested
-      # images now render synchronously, in parallel threads, within
-      # this same invocation (see app/services/image_generation_service.py
-      # generate_variations()) — no SQS, no second invocation. Note that
-      # API Gateway HTTP API hard-caps a Lambda proxy integration at
-      # ~29-30s regardless of this value, so raising this Timeout does
-      # not let a multi-image request exceed that ceiling — it only
-      # matters for direct Lambda invokes (e.g. local testing via
-      # `sam local invoke`) or if you later front this with something
-      # other than API Gateway HTTP API.
       Timeout: 210
-      # Every `sam deploy` that changes code or configuration now
-      # publishes a new IMMUTABLE Lambda version (1, 2, 3, ...) and keeps
-      # the "prod" alias — not $LATEST — as the stable pointer production
-      # traffic actually uses. SAM automatically repoints the existing
-      # ApiEvent/RootEvent integrations below at
-      # "content_generation:prod" instead of the bare function/$LATEST,
-      # and manages the matching Lambda resource-based invoke permission
-      # for API Gateway — no manual Api/integration changes needed, and
-      # the existing API Gateway URL/routes/CORS are unaffected.
       AutoPublishAlias: prod
       DeploymentPreference:
         Type: !Ref DeploymentPreferenceType
@@ -230,7 +121,6 @@ Resources:
           KNOWLEDGE_BASE_ID: !Ref KnowledgeBaseId
           KNOWLEDGE_BASE_REGION: !Ref KnowledgeBaseRegion
           IMAGE_PROVIDER: !Ref ImageProvider
-          FREEPIK_API_KEY: !Ref FreepikApiKey
           FREEPIK_MODEL: !Ref FreepikModel
           FREEPIK_FILTER_NSFW: !Ref FreepikFilterNsfw
           FREEPIK_MAX_CONCURRENT_SUBMISSIONS: !Ref FreepikMaxConcurrentSubmissions
@@ -259,33 +149,25 @@ Resources:
         ApiEvent:
           Type: HttpApi
           Properties:
-            ApiId: !Ref ContentGenerationApi
+            ApiId: !Ref AssetGenerationApi
             Path: /{proxy+}
             Method: ANY
         RootEvent:
-          # /{proxy+} does not match the bare root path — this catches
-          # GET / so the bundled frontend/index.html is served there.
           Type: HttpApi
           Properties:
-            ApiId: !Ref ContentGenerationApi
+            ApiId: !Ref AssetGenerationApi
             Path: /
             Method: GET
 
 Outputs:
   ApiUrl:
-    Description: Invoke URL for the Content Generation API
-    Value: !Sub "https://${ContentGenerationApi}.execute-api.${AWS::Region}.amazonaws.com"
+    Description: Invoke URL for the Asset Generation API
+    Value: !Sub "https://${AssetGenerationApi}.execute-api.${AWS::Region}.amazonaws.com"
   FunctionArn:
-    Value: !GetAtt ContentGenerationFunction.Arn
+    Value: !GetAtt AssetGenerationFunction.Arn
   FunctionName:
-    Description: The Lambda function's actual name in AWS
-    Value: !Ref ContentGenerationFunction
+    Value: !Ref AssetGenerationFunction
   ProdAliasArn:
-    Description: >
-      The stable "prod" alias ARN — this, not the bare FunctionArn above,
-      is what API Gateway actually invokes. Use with `aws lambda
-      update-alias` for manual rollback (see README's Rollback section).
-    Value: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${ContentGenerationFunction}:prod"
+    Value: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${AssetGenerationFunction}:prod"
   GeneratedImagesBucketName:
-    Description: S3 bucket storing generated images
     Value: !Ref GeneratedImagesBucket
