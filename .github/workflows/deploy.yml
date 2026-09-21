@@ -17,7 +17,14 @@ permissions:
 
 env:
   AWS_REGION: us-east-1 # match KnowledgeBaseRegion/your deploy region
-  SAM_STACK_NAME: ai-content-generation-service # must match the stack iam/github-actions-oidc.yaml's AppStackName was set to
+  # Was "ai-content-generation-service" — did NOT match the actual
+  # deployed stack ("asset-generation-stack"). Left as-is, this workflow
+  # would have created a SECOND, separate stack (its own Lambda, REST
+  # API, S3 bucket) rather than updating the real one — exactly the
+  # "duplicate production resources" failure mode this project's
+  # architecture rules explicitly forbid. Confirmed via
+  # `aws cloudformation describe-stacks` against the real account.
+  SAM_STACK_NAME: asset-generation-stack # must match the stack iam/github-actions-oidc.yaml's AppStackName was set to
 
 jobs:
   deploy:
@@ -74,8 +81,16 @@ jobs:
             --parameter-overrides \
               KnowledgeBaseId="${{ secrets.KNOWLEDGE_BASE_ID }}" \
               KnowledgeBaseRegion="${{ vars.KNOWLEDGE_BASE_REGION || env.AWS_REGION }}" \
+              BedrockRegion="${{ vars.BEDROCK_REGION || env.AWS_REGION }}" \
               ImageProvider="${{ vars.IMAGE_PROVIDER || 'freepik' }}" \
               FreepikApiKey="${{ secrets.FREEPIK_API_KEY }}" \
+              FreepikModel="${{ vars.FREEPIK_MODEL || '' }}" \
+              FreepikFilterNsfw="${{ vars.FREEPIK_FILTER_NSFW || 'true' }}" \
+              FreepikMaxConcurrentSubmissions="${{ vars.FREEPIK_MAX_CONCURRENT_SUBMISSIONS || '1' }}" \
+              FreepikSubmitMaxRetries="${{ vars.FREEPIK_SUBMIT_MAX_RETRIES || '2' }}" \
+              FreepikSubmitRetryBackoffSeconds="${{ vars.FREEPIK_SUBMIT_RETRY_BACKOFF_SECONDS || '0.75' }}" \
+              FreepikPollIntervalSeconds="${{ vars.FREEPIK_POLL_INTERVAL_SECONDS || '3' }}" \
+              FreepikPollTimeoutSeconds="${{ vars.FREEPIK_POLL_TIMEOUT_SECONDS || '170' }}" \
               DeploymentPreferenceType="${{ vars.DEPLOYMENT_PREFERENCE_TYPE || 'Canary10Percent5Minutes' }}" \
             --tags \
               GitCommit="${{ github.sha }}" \
