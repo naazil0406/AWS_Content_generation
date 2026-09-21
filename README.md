@@ -786,4 +786,4 @@ changes; no global/in-memory state was introduced anywhere in this work.
   `app/routes/content.py` yet — only `/api/generate`, `/api/content-types`,
   and `/api/health` exist today. Build those out if the full frontend
   experience (pick-an-image, edit, version history) is needed, or trim
-  the frontend down to match the current single-shot API.
+  the frontend down to match the current single-shot API.CI/CD deployment test
