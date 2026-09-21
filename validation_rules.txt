@@ -18,10 +18,17 @@
 warning = Please enter a prompt before generating content.
 
 [SPECIAL_CHARACTERS]
-# Applies only when the ENTIRE prompt has no letters or digits at all
-# (e.g. "@", "!!!", "@#$%"). Prompts that mix punctuation with real
-# words (e.g. "AI & Cybersecurity", "COVID-19 safety") are never
-# affected by this rule.
+# Applies when EITHER: the ENTIRE prompt has no letters or digits at
+# all (e.g. "@", "!!!", "@#$%"), OR the prompt contains a run of 2+
+# repeats of one non-alphanumeric character used as its own token
+# (e.g. "safety ### health", "safety &&& health") — the latter is
+# always noise/decoration regardless of which character repeats, so
+# it's caught here structurally rather than by name. Prompts that mix
+# ORDINARY, non-repeated punctuation with real words (e.g. "AI &
+# Cybersecurity", "COVID-19 safety") are never affected by this rule —
+# see ILLOGICAL_CHARACTERS_OR_NUMBERS below for the separate,
+# context-aware check covering single-character misuse and meaningless
+# numbers.
 warning = ⚠️ Invalid prompt: Special characters alone are not allowed. Please enter meaningful words.
 
 [NUMBERS_ONLY]
@@ -29,6 +36,24 @@ warning = ⚠️ Invalid prompt: Special characters alone are not allowed. Pleas
 # "5"). Numbers inside a meaningful prompt ("Create 5 safety tips") are
 # never affected by this rule.
 warning = ⚠️ Invalid prompt: Numbers alone are not a meaningful content request. Please describe what you'd like created.
+
+[ILLOGICAL_CHARACTERS_OR_NUMBERS]
+# Context-aware check, separate from SPECIAL_CHARACTERS/NUMBERS_ONLY
+# above — those two catch prompts that are ENTIRELY symbols/digits, or
+# a repeated-symbol run; this one catches a prompt that names a real
+# topic but ALSO contains a single special character used illogically
+# for its specific position (e.g. wedged between two words with no
+# conventional connecting role there, or spliced directly inside a
+# word), or a number with no plausible contextual relationship to the
+# topic (not a year, identifier, quantity, or measurement a real
+# person would plausibly write). This judgment is made by the LLM-based
+# analysis in app/services/validation_service.py's
+# _ANALYSIS_SYSTEM_PROMPT (has_illogical_characters_or_numbers rule) —
+# deliberately NOT a fixed list of "bad" characters or numbers here,
+# since the same character/number can be perfectly legitimate in one
+# context and arbitrary noise in another; only the user-facing MESSAGE
+# is configured here, not the detection logic itself.
+warning = Invalid Prompt: Please enter a clear and meaningful topic. Your prompt contains unwanted special characters or numbers that do not appear to have meaningful context. Please correct the prompt before generating content.
 
 [MEANINGFUL_WORDS]
 # Covers keyboard-mash (asdfgh, qwerty), single-repeated-character runs

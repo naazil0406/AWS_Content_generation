@@ -167,6 +167,46 @@ def is_special_characters_only(prompt: str) -> bool:
     return bool(stripped) and bool(_SPECIAL_CHARS_ONLY_RE.match(stripped))
 
 
+def has_repeated_symbol_run(prompt: str) -> bool:
+    """True when the prompt contains a token that's 2+ repeats of ONE
+    non-alphanumeric character used as its own token — e.g. "###",
+    "&&&", "^^^", "@@@". This is the one special-character check kept
+    as a cheap, pre-LLM heuristic (no LLM round trip needed) because
+    it's genuinely universal and structural: a run of the SAME
+    punctuation character repeated as its own "word" is never
+    legitimate prose in any context, REGARDLESS OF WHICH CHARACTER
+    repeats — this is not a rule about any specific character being
+    good or bad, only about repetition-as-decoration being a
+    structural signal, so it generalizes to characters never
+    explicitly tested here too.
+
+    Everything else — whether a SINGLE special character is logically
+    placed for its specific position (e.g. "safety @ health" vs "AI &
+    Cybersecurity" vs "Team sync @ 5pm"), or whether a character is
+    spliced directly into a word (e.g. "s@fety" vs "well-being" vs
+    "don't") — genuinely depends on which character it is and the
+    surrounding context, which a fixed regex/character-set cannot
+    judge correctly in general (a fixed "these characters are always
+    illogical standalone" list would incorrectly reject legitimate,
+    perfectly ordinary uses this project has no way to enumerate in
+    advance). That contextual judgment is intentionally delegated to
+    analyze_prompt()'s LLM-based analysis below instead — see
+    _ANALYSIS_SYSTEM_PROMPT's "special characters" and "numeric
+    tokens" rules, which describe the PRINCIPLE (does this character's
+    position make linguistic sense; does this number have a plausible
+    contextual relationship to the topic) rather than any fixed list
+    of characters or numbers, so the judgment generalizes to prompts
+    never seen before.
+    """
+    stripped = (prompt or "").strip()
+    if not stripped:
+        return False
+    for token in stripped.split():
+        if len(token) >= 2 and len(set(token)) == 1 and not token[0].isalnum():
+            return True
+    return False
+
+
 def is_obvious_gibberish(prompt: str) -> bool:
     """Fast pre-filter for the most blatant meaningless-input cases from
     the spec (digit strings, single-repeated-character runs, immediately
@@ -204,6 +244,8 @@ Analyze it and respond with ONLY a single JSON object (no markdown fences, no co
 
 {
   "is_meaningful": true/false,
+  "has_illogical_characters_or_numbers": true/false,
+  "illogical_reason": "short internal reason if has_illogical_characters_or_numbers is true, else null",
   "is_appropriate": true/false,
   "moderation_reason": "short internal reason if is_appropriate is false, else null",
   "corrected_prompt": "the prompt with ONLY obvious spelling/typing mistakes fixed",
@@ -239,6 +281,10 @@ RULES:
   * is a creative or descriptive idea rather than a literal instruction
   * has no exact Knowledge Base match — that is a separate, later concern (Knowledge Base relevance), never a reason to call the input itself not meaningful
   Do not require the word to look like a formal "topic" or be a noun — a single verb/gerund naming a real behavior (e.g. "rushing") is exactly as valid a topic as a noun (e.g. "safety"). Judge semantic meaning, never by checking for specific keywords. When in doubt between "this is a real subject" and "this is just filler," prefer true (meaningful) — false is reserved for the narrow, unambiguous cases of pure gibberish or pure social nicety with no subject at all.
+- has_illogical_characters_or_numbers: this is a SEPARATE judgment from is_meaningful — a prompt can name a perfectly real topic (is_meaningful: true) while STILL containing a special character or number used in a way that doesn't make sense, and vice versa. Set this to true when EITHER of these is the case, and to false otherwise:
+  (a) SPECIAL CHARACTERS: a punctuation/symbol character appears in a position where it does not serve any recognizable linguistic role for that specific character — e.g. wedged between two words as if standing in for a missing word without being a character that conventionally does that (some characters DO conventionally join or connect words in ordinary writing — e.g. an ampersand joining two related terms, a hyphen joining a compound word, a colon in a time or ratio, a slash meaning "or" — those remain perfectly valid wherever they fit that established role); OR spliced directly inside a single word in a way that does not form any real, recognizable word or standard construction. Never assume a character carries meaning just because it sits between or inside real words — actively judge whether ITS OWN conventional role fits ITS OWN specific position. When a character's usage genuinely could plausibly be an ordinary, real-world way people write (any domain, any register — informal, technical, colloquial), treat it as fine; only flag usage that reads as arbitrary noise, decoration, or an inserted/misplaced symbol with no linguistic function where it sits.
+  (b) NUMBERS: a numeric sequence appears with no plausible contextual relationship to the rest of the prompt — i.e. it could not reasonably be read as a year, a date, a version/standard/model/product identifier, a quantity or count of something named in the prompt, a measurement, or any other number that a real person would plausibly include when writing about that specific topic. Judge this using your own general knowledge and reasoning about what that number could plausibly represent given the surrounding words — do not rely on any fixed list of "known good" or "known bad" numbers, since the same digits can be meaningful in one context and arbitrary in another. Numbers that plausibly fit some real-world referent implied by the prompt are fine, however unfamiliar the specific number is to you — only flag a number when nothing about the surrounding text gives it any plausible referent at all.
+  Be conservative: this check exists to catch prompts where a character or number reads as arbitrary noise inserted into otherwise real text, not to police normal, natural writing. If you are genuinely unsure whether a specific usage is legitimate, prefer false (do not flag it) — false positives block real requests, which is worse than occasionally letting an ambiguous case through to the moderation/relevance checks that follow.
 - is_appropriate: false for any request in these categories, regardless of phrasing, misspelling, unusual spacing/punctuation, character substitution, or other obfuscation attempts:
   * instructions or facilitation for harming people, self-harm, or violent wrongdoing
   * facilitating dangerous criminal activity, weapons, or explosives
@@ -247,7 +293,7 @@ RULES:
   * sexual exploitation, sexual solicitation, or non-consensual sexual content
   * any sexual content involving minors, under any framing including fictional
   Judge the SEMANTIC INTENT behind the text, not just literal exact words — a request written with misspellings, extra spaces/punctuation between letters, or character substitutions (e.g. "@" for "a", "3" for "e") that clearly still means one of the above categories is still is_appropriate: false. Conversely, do NOT flag ordinary educational, medical, safety-training, or health terminology as inappropriate merely because a word could theoretically have another meaning out of context — judge the actual request as a whole.
-- corrected_prompt: fix ONLY obvious spelling/typing errors. NEVER change technical terms, brand/product/company names, acronyms, abbreviations, numbers, model names, or URLs. If you are not certain something is a typo, leave it unchanged. If there are no corrections, corrected_prompt must be identical to the input and corrections must be an empty list.
+- corrected_prompt: fix ONLY obvious spelling/typing errors. NEVER change technical terms, brand/product/company names, acronyms, abbreviations, numbers, model names, or URLs. NEVER convert a symbol/special character into the word it might phonetically or conventionally stand for (e.g. "&" into "and", "@" into "at", "%" into "percent") — that is not a spelling/typing fix, and doing so silently changes what the user actually typed. If a prompt has has_illogical_characters_or_numbers: true, corrected_prompt must still be IDENTICAL to the original input — never "fix" illogical characters/numbers by rewriting them, since that prompt is being rejected, not corrected. If you are not certain something is a typo, leave it unchanged. If there are no corrections, corrected_prompt must be identical to the input and corrections must be an empty list.
 - intent: extract only what is explicitly present or clearly implied by the prompt; use null/empty for anything not specified. Never invent requirements the user didn't state.
 - The user's original prompt is the source of truth for topic/intent — never substitute a different topic.
 """
@@ -294,6 +340,7 @@ class IntentModel(TypedDict, total=False):
 
 class AnalysisResult(TypedDict):
     is_meaningful: bool
+    has_illogical_characters_or_numbers: bool
     is_appropriate: bool
     moderation_reason: Optional[str]
     corrected_prompt: str
@@ -371,6 +418,27 @@ def analyze_prompt(
 
     if not data.get("is_meaningful", True):
         raise ValidationError(_build_meaningless_warning(llm, kb_sample_fn), error_type="meaningless")
+    if data.get("has_illogical_characters_or_numbers", False):
+        # Separate from "meaningless" above — the prompt DOES name a
+        # real topic, but a special character or number within it is
+        # being used in a way that doesn't make contextual sense (see
+        # _ANALYSIS_SYSTEM_PROMPT's has_illogical_characters_or_numbers
+        # rule for exactly what this covers and doesn't). Logged with
+        # the model's own stated reason for debugging — never shown to
+        # the user, who gets the fixed, general message below instead.
+        logger.info(
+            "Illogical special character/number usage detected. Internal reason: %s",
+            data.get("illogical_reason"),
+        )
+        raise ValidationError(
+            get_rule(
+                "ILLOGICAL_CHARACTERS_OR_NUMBERS", "warning",
+                "Invalid Prompt: Please enter a clear and meaningful topic. Your prompt contains "
+                "unwanted special characters or numbers that do not appear to have meaningful context. "
+                "Please correct the prompt before generating content.",
+            ),
+            error_type="illogical_characters_or_numbers",
+        )
     if not data.get("is_appropriate", True):
         logger.info("Content moderation blocked a request. Internal reason: %s", data.get("moderation_reason"))
         raise ValidationError(
@@ -383,6 +451,7 @@ def analyze_prompt(
 
     return {
         "is_meaningful": True,
+        "has_illogical_characters_or_numbers": False,
         "is_appropriate": True,
         "moderation_reason": None,
         "corrected_prompt": (data.get("corrected_prompt") or original_prompt).strip(),
@@ -724,7 +793,9 @@ def run_input_validation(
     available_industries: Optional[List[str]] = None,
 ) -> tuple:
     """The full pre-generation validation flow in one call: basic ->
-    special-char -> meaningful (heuristic fast-path, then LLM) ->
+    repeated-symbol-run fast-path -> meaningful (LLM) -> illogical
+    special-character/number usage (LLM, context-aware — see
+    analyze_prompt()'s has_illogical_characters_or_numbers handling) ->
     spelling correction -> moderation -> understanding (+ industry
     suggestion, if available_industries is given — see analyze_prompt()'s
     docstring for why this is folded in here instead of a separate call).
@@ -747,7 +818,7 @@ def run_input_validation(
         )
 
     stripped = raw_prompt.strip()
-    if is_special_characters_only(stripped):
+    if is_special_characters_only(stripped) or has_repeated_symbol_run(stripped):
         raise ValidationError(
             get_rule(
                 "SPECIAL_CHARACTERS", "warning",

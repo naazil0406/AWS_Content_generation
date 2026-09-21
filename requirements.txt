@@ -15,5 +15,8 @@ boto3>=1.35.0,<2.0.0
 # --- Config ---
 python-dotenv>=1.0.1,<2.0.0
 
-# --- Local development only (not needed inside the Lambda package) ---
+# --- Local dev server, AND now required inside the Lambda package too:
+# the Lambda Web Adapter layer (see template.yaml's run.sh/Layers) execs
+# a real uvicorn process to get true streaming responses, so this can no
+# longer be dev-only. ---
 uvicorn[standard]>=0.30.0

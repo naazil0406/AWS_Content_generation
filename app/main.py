@@ -28,7 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from mangum import Mangum
 
-from app.routes import content
+from app.routes import content, stream_test
 from app.services.knowledge_base_service import KnowledgeBaseError, KnowledgeBaseService
 from app.services.validation_service import ValidationError
 from app.config import settings
@@ -83,6 +83,7 @@ app.add_middleware(
 )
 
 app.include_router(content.router, prefix="/api")
+app.include_router(stream_test.router, prefix="/api")
 
 
 @app.exception_handler(ValidationError)

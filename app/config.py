@@ -15,6 +15,64 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+_logger = logging.getLogger(__name__)
+
+# Placeholder the deployed FreepikApiKeySecret is created with in
+# template.yaml — before you've run `aws secretsmanager put-secret-value`
+# the secret still exists but holds exactly this string. Treated as
+# "not configured yet" (empty key) rather than used as a literal API key.
+_FREEPIK_SECRET_PLACEHOLDER = "REPLACE_ME_VIA_CLI_OR_CONSOLE"
+
+
+def _load_freepik_api_key() -> str:
+    """Resolves the Freepik API key.
+
+    Deployed path (Lambda): FREEPIK_API_KEY_SECRET_ARN is set by
+    template.yaml, pointing at the FreepikApiKeySecret Secrets Manager
+    secret. Fetched once here at import time (i.e. once per Lambda cold
+    start, not per-request) rather than per-request, since the key
+    doesn't change between invocations of the same running instance and
+    a Secrets Manager API call on every request would add needless
+    latency/cost.
+
+    Local dev / fallback path: FREEPIK_API_KEY_SECRET_ARN is unset (no
+    Secrets Manager involved), so this falls back to the plain
+    FREEPIK_API_KEY env var — e.g. from a local .env file.
+
+    Any Secrets Manager error (missing permissions, secret not found,
+    network issue) is logged and swallowed rather than raised: this runs
+    at module import time, and letting an exception escape here would
+    crash the entire Lambda cold start over what is, at worst, a
+    degraded (image generation disabled) rather than fully broken
+    service — see image_generation_service.py's handling of a blank key.
+    """
+    secret_arn = os.getenv("FREEPIK_API_KEY_SECRET_ARN", "").strip()
+    if not secret_arn:
+        return os.getenv("FREEPIK_API_KEY", "").strip()
+
+    try:
+        import boto3
+
+        client = boto3.client(
+            "secretsmanager",
+            region_name=os.getenv("BEDROCK_REGION", os.getenv("AWS_REGION", "us-east-1")),
+        )
+        secret_value = client.get_secret_value(SecretId=secret_arn).get("SecretString", "").strip()
+    except Exception:  # noqa: BLE001 - best-effort; see docstring above
+        _logger.warning("Could not read Freepik API key from Secrets Manager secret %s", secret_arn, exc_info=True)
+        return os.getenv("FREEPIK_API_KEY", "").strip()
+
+    if not secret_value or secret_value == _FREEPIK_SECRET_PLACEHOLDER:
+        _logger.warning(
+            "Freepik API key secret %s still holds its placeholder value — "
+            "run `aws secretsmanager put-secret-value --secret-id %s --secret-string <key>` "
+            "to set the real key.",
+            secret_arn,
+            secret_arn,
+        )
+        return ""
+    return secret_value
+
 
 def setup_logging(log_level: str = "INFO") -> None:
     """Configure root logging. CloudWatch captures whatever the Lambda
@@ -136,7 +194,7 @@ class Settings:
     POLLINATIONS_MODEL: str = os.getenv("POLLINATIONS_MODEL", "flux")
     POLLINATIONS_BASE_URL: str = os.getenv("POLLINATIONS_BASE_URL", "https://image.pollinations.ai/prompt")
 
-    FREEPIK_API_KEY: str = os.getenv("FREEPIK_API_KEY", "").strip()
+    FREEPIK_API_KEY: str = _load_freepik_api_key()
     # Blank -> falls through to Mystic (slowest, ~90-130s/image at 2K).
     # Faster options: "hyperflux" (fastest), "flux-dev", "seedream-v4",
     # "seedream-v4-5", or "seedream-v5-lite" (newest, ~20-40s/image per

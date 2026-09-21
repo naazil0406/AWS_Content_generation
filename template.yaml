@@ -1,59 +1,91 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: >
-  Asset Generation Service — FastAPI on Lambda behind an HTTP API, via
-  Mangum. Independent stack, new resources, no dependency on
-  content-generation-stack. This intentionally matches the simple,
-  proven-working pattern (no raw REST API, no Web Adapter/run.sh, no
-  streaming) after repeated AWS::EarlyValidation::PropertyValidation
-  failures on more complex variants of this template.
-  Deploy: sam build && sam deploy --guided
+  AI Content Generation Service — FastAPI on Lambda behind a REST API
+  (API Gateway v1), via the AWS Lambda Web Adapter (real uvicorn
+  process) instead of Mangum. AWS_LWA_INVOKE_MODE=response_stream is
+  set function-wide, so EVERY route's integration URI must point at
+  Lambda's response-streaming-invocations invoke path, not just the
+  streaming ones — a plain Invoke against a response_stream-configured
+  function is a protocol mismatch (502/InternalServerErrorException
+  despite the function executing fine). Two routes —
+  /api/generate/stream and /api/regenerate-image/stream — also set
+  ResponseTransferMode: STREAM with an extended timeout, confirmed via
+  a separate proof-of-concept stack to deliver SSE past API Gateway's
+  normal ~29-30s ceiling. Every other route stays BUFFERED and
+  effectively still ~29s-capped — only the invoke path changed for
+  them, not client-visible behavior.
+  Deploy with: sam build && sam deploy --guided
 
 Globals:
   Function:
-    Timeout: 210
+    Timeout: 120
     MemorySize: 1024
     Runtime: python3.11
+    Architectures: [arm64]
     Environment:
       Variables:
         LOG_LEVEL: INFO
+        # --- Lambda Web Adapter ---
+        # Mangum is fundamentally incompatible with streaming — it's a
+        # request/response shim that buffers the ENTIRE ASGI response
+        # before returning it to Lambda, regardless of what API Gateway
+        # asks for. LWA replaces it with a thin proxy in front of a
+        # real, long-lived uvicorn process running the same app.main:app
+        # object — see run.sh (Handler, below) and requirements.txt.
+        AWS_LAMBDA_EXEC_WRAPPER: /opt/bootstrap
+        AWS_LWA_INVOKE_MODE: response_stream
+        PORT: "8000"
+    Tags:
+      Project: AIContentGenerationV2
 
 Parameters:
   KnowledgeBaseId:
     Type: String
-    Description: ID of the existing Amazon Bedrock Knowledge Base. Not a URL.
+    Description: >
+      ID of the existing Amazon Bedrock Knowledge Base.
   KnowledgeBaseRegion:
     Type: String
-    Default: us-east-1
+    Description: Region the Bedrock Knowledge Base lives in.
+  BedrockRegion:
+    Type: String
+    Description: Region the Content Generation / Image Prompt LLM calls run against.
   ImageProvider:
     Type: String
-    Default: freepik
     AllowedValues: [freepik, aws, pollinations]
-  FreepikModel:
+  # RESTORED — this was missing from the pasted template. Without it,
+  # FREEPIK_API_KEY never reaches the Lambda's environment and every
+  # Freepik call fails auth, regardless of ImageProvider being set to
+  # "freepik". Not a streaming-related property; carried over verbatim
+  # from the original project template.
+  FreepikApiKey:
     Type: String
     Default: ""
+    NoEcho: true
+    Description: >
+      Freepik API key. NoEcho hides it from CloudFormation console/CLI
+      output and events, but does NOT encrypt it at rest in the
+      Lambda's environment variables — anyone with
+      lambda:GetFunctionConfiguration on this function can still read
+      it back in plaintext.
+  FreepikModel:
+    Type: String
+    Description: Empty = Freepik's Mystic endpoint.
   FreepikFilterNsfw:
     Type: String
-    Default: "true"
     AllowedValues: ["true", "false"]
   FreepikMaxConcurrentSubmissions:
     Type: Number
-    Default: 1
   FreepikSubmitMaxRetries:
     Type: Number
-    Default: 2
   FreepikSubmitRetryBackoffSeconds:
     Type: Number
-    Default: 0.75
   FreepikPollIntervalSeconds:
     Type: Number
-    Default: 3
   FreepikPollTimeoutSeconds:
     Type: Number
-    Default: 170
   DeploymentPreferenceType:
     Type: String
-    Default: Canary10Percent5Minutes
     AllowedValues:
       - AllAtOnce
       - Canary10Percent5Minutes
@@ -66,30 +98,220 @@ Parameters:
       - Linear10PercentEvery10Minutes
 
 Resources:
-  AssetGenerationApi:
-    Type: AWS::Serverless::HttpApi
+  # REST API (not HttpApi) — required for ResponseTransferMode:
+  # RESPONSE_STREAM on the streaming route below. HttpApi has a hard,
+  # non-configurable ~29-30s integration timeout with no true response
+  # streaming for Lambda proxy integrations. Logical ID is
+  # ContentGenerationRestApi, not ContentGenerationApi, because
+  # CloudFormation cannot change a resource's Type in place under the
+  # same logical ID — only delete-and-recreate under a new one.
+  #
+  # DefinitionBody (inline OpenAPI), not the SAM Events: shorthand on
+  # ContentGenerationFunction below, is what defines every route here.
+  # This is deliberate, not stylistic: ResponseTransferMode and
+  # TimeoutInMillis only exist on the raw AWS::ApiGateway::Method
+  # resource's Integration block — SAM's "Api" event Properties has no
+  # equivalent (confirmed against the actual CloudFormation resource
+  # schema; an earlier attempt at this used ResponseTransferMode under
+  # a SAM Api event, which the schema doesn't support at all and which
+  # SAM most likely just silently ignored). More importantly,
+  # DefinitionBody keeps SAM's automatic redeploy-on-change hash tied to
+  # the ACTUAL, COMPLETE API definition — so adding, removing, or
+  # retuning any route (streaming or not) always triggers a real
+  # redeployment to the "Prod" stage. Manually-added sibling
+  # AWS::ApiGateway::Resource/Method resources alongside the old
+  # Events-driven implicit API would NOT have this guarantee: SAM's
+  # redeploy hash is computed only from what IT generates from Events,
+  # so a change to a hand-added Method could silently never reach the
+  # live stage — the API would look correct in the template and in the
+  # AWS Console's resource tree, but calls would still hit stale
+  # behavior (or 404) until some unrelated Events-tracked change
+  # happened to also force a redeploy.
+  #
+  # CORS: no Cors: property here — it has no effect once DefinitionBody
+  # is set (SAM's Cors shorthand only injects mock OPTIONS integrations
+  # into an implicit, Events-derived API). CORS is instead handled
+  # exactly the way every other request already is: FastAPI's own
+  # CORSMiddleware in app/main.py (allow_origins/methods/headers="*",
+  # unchanged) answers OPTIONS preflight once a request reaches the
+  # Lambda via AWS_PROXY — no separate API-Gateway-level mock
+  # integration needed, since every path below is a real proxy
+  # integration (not a mock) that reaches the app.
+  ContentGenerationRestApi:
+    Type: AWS::Serverless::Api
     Properties:
-      CorsConfiguration:
-        AllowOrigins: ["*"]
-        AllowMethods: ["*"]
-        AllowHeaders: ["*"]
+      Name: content-generation-v2-api
+      StageName: Prod
+      Tags:
+        Project: AIContentGenerationV2
+      DefinitionBody:
+        openapi: "3.0.1"
+        info:
+          title: content-generation-v2-api
+          version: "1.0"
+        paths:
+          # Everything except the two /stream routes further down:
+          # client-visible behavior is unchanged (a complete,
+          # non-streamed HTTP response, delivered all at once) — but the
+          # INTEGRATION ITSELF must still use the streaming invoke path
+          # AND responseTransferMode: STREAM, both mandatory together,
+          # not just for the two routes that actually need progressive
+          # delivery. Two hard constraints combine to force this:
+          #   1. AWS_LWA_INVOKE_MODE=response_stream (Globals.Function
+          #      above) is set FUNCTION-WIDE, so the Lambda Web Adapter
+          #      always answers using Lambda's streaming response
+          #      protocol (InvokeWithResponseStream) — no per-route
+          #      toggle. Calling that same running Lambda via the PLAIN
+          #      invoke path (path/2015-03-31/.../invocations) is a
+          #      protocol mismatch: the function executes successfully,
+          #      but the response envelope doesn't match what a plain
+          #      Invoke caller expects. This surfaced as CloudWatch
+          #      showing "GET / ... 200 OK" from uvicorn itself, while
+          #      the client got a 502/InternalServerErrorException — the
+          #      failure was in the Lambda<->API-Gateway handoff, AFTER
+          #      your code had already returned successfully.
+          #   2. Once the URI is response-streaming-invocations,
+          #      ResponseTransferMode: BUFFERED (including the default
+          #      when left unset — this was tried first and rejected)
+          #      is flatly invalid there. AWS's own import-time
+          #      validation error is explicit: "Cannot use
+          #      ResponseTransferMode BUFFERED for Lambda functions
+          #      invoked by InvokeWithResponseStream for AWS_PROXY
+          #      integrations." STREAM is not optional once the URI is
+          #      streaming-invocations — every route on this API needs
+          #      both together, or neither.
+          /{proxy+}:
+            x-amazon-apigateway-any-method:
+              parameters:
+                - name: proxy
+                  in: path
+                  required: true
+                  schema:
+                    type: string
+              responses:
+                "200":
+                  description: Proxied response from the FastAPI app.
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                passthroughBehavior: when_no_match
+                uri: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2021-11-15/functions/${ContentGenerationFunction.Arn}:prod/response-streaming-invocations"
+                responseTransferMode: STREAM
+          /:
+            get:
+              responses:
+                "200":
+                  description: Proxied response from the FastAPI app (serves frontend/index.html).
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                passthroughBehavior: when_no_match
+                uri: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2021-11-15/functions/${ContentGenerationFunction.Arn}:prod/response-streaming-invocations"
+                responseTransferMode: STREAM
+          # --- The two streaming routes: the actual fix. ---
+          # httpMethod under x-amazon-apigateway-integration is ALWAYS
+          # POST regardless of the route's own HTTP method — that's the
+          # AWS_PROXY integration's fixed backend-invocation verb
+          # (unrelated to /api/generate/stream's own POST here; /{proxy+}
+          # above is also POST-to-Lambda even though it fronts ANY
+          # method). The path segment is what actually matters:
+          # 2021-11-15/functions/{arn}/response-streaming-invocations
+          # instead of 2015-03-31/functions/{arn}/invocations — THAT is
+          # what tells API Gateway to use Lambda's streaming invoke
+          # mechanism. responseTransferMode: STREAM plus a
+          # timeoutInMillis above the normal 29000 default (200000 here
+          # — 10s under this function's own 210s Timeout above, leaving
+          # the same margin the proof-of-concept stack proved out at
+          # 290000/300s) is the confirmed-working combination.
+          /api/generate/stream:
+            post:
+              responses:
+                "200":
+                  description: SSE stream from the FastAPI app.
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                passthroughBehavior: when_no_match
+                uri: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2021-11-15/functions/${ContentGenerationFunction.Arn}:prod/response-streaming-invocations"
+                responseTransferMode: STREAM
+                timeoutInMillis: 200000
+          /api/regenerate-image/stream:
+            post:
+              responses:
+                "200":
+                  description: SSE stream from the FastAPI app.
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                passthroughBehavior: when_no_match
+                uri: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2021-11-15/functions/${ContentGenerationFunction.Arn}:prod/response-streaming-invocations"
+                responseTransferMode: STREAM
+                timeoutInMillis: 200000
 
+  # DefinitionBody (above) bypasses the automatic per-route Lambda
+  # invoke permission SAM normally generates from Events: — so it has
+  # to be declared explicitly, once, covering every method/path on this
+  # API via the /*/* wildcard (the same scope SAM's own auto-generated
+  # permission would have covered). FunctionName carries the ":prod"
+  # alias suffix (not a separate Qualifier property — AWS::Lambda::
+  # Permission doesn't have one, confirmed the hard way earlier in this
+  # project) so this permission actually matches what's being invoked
+  # above (the "prod" alias, via AutoPublishAlias), not the bare
+  # function/$LATEST.
+  ContentGenerationApiInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Sub "${ContentGenerationFunction}:prod"
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ContentGenerationRestApi}/*/*"
+
+  # Function URL: deliberately NOT managed by this stack. One already
+  # exists for this function+alias (arn:...:function:content-generation-v2:prod)
+  # created outside this CloudFormation stack — a `sam deploy` including
+  # an AWS::Lambda::Url resource here failed with HandlerErrorCode:
+  # AlreadyExists (Lambda only allows one Function URL per
+  # function+qualifier), which confirmed this. The existing Function
+  # URL keeps working exactly as it already does — its InvokeMode,
+  # whatever it's currently set to, is untouched by anything in this
+  # template, since nothing here references or manages it. Streaming
+  # through it still works via the same Lambda Web Adapter / run.sh
+  # backend (Handler/Layers/AWS_LWA_INVOKE_MODE below) that the REST API
+  # routes use — that backend change applies to the whole function
+  # regardless of which front door invokes it.
+  #
+  # To bring the existing Function URL under this stack's management
+  # instead (e.g. to change its InvokeMode via this template later),
+  # use CloudFormation's "import resources into stack" flow rather than
+  # declaring a fresh AWS::Lambda::Url resource here.
   GeneratedImagesBucket:
     Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
+      BucketName: !Sub "content-generation-v2-images-${AWS::AccountId}-${AWS::Region}"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
       LifecycleConfiguration:
         Rules:
           - Id: ExpireGeneratedImages
             Status: Enabled
             ExpirationInDays: 1
+      Tags:
+        - Key: Project
+          Value: AIContentGenerationV2
 
   ProdAliasErrorAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmDescription: >
-        Lambda Errors > 0 for asset_generation's "prod" alias — triggers
-        CodeDeploy's automatic rollback while a canary/linear deployment
-        is in progress.
+      AlarmDescription: Lambda Errors > 0 for the content_generation function's "prod" alias.
       Namespace: AWS/Lambda
       MetricName: Errors
       Statistic: Sum
@@ -100,16 +322,29 @@ Resources:
       TreatMissingData: notBreaching
       Dimensions:
         - Name: FunctionName
-          Value: !Ref AssetGenerationFunction
+          Value: !Ref ContentGenerationFunction
         - Name: Resource
-          Value: !Sub "${AssetGenerationFunction}:prod"
+          Value: !Sub "${ContentGenerationFunction}:prod"
 
-  AssetGenerationFunction:
+  ContentGenerationFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: asset_generation
-      Handler: app.main.handler
+      FunctionName: content-generation-v2
+      # Was app.main.handler (Mangum). Handler is now the Lambda Web
+      # Adapter startup script (run.sh, at the project root alongside
+      # this template) so the FastAPI app runs as a real uvicorn
+      # process and can stream a response progressively. app.main:app
+      # itself is unchanged — app.main.handler/_mangum_handler are left
+      # in place as unused dead code; LWA never calls them, it execs
+      # run.sh, which starts uvicorn against the same app object.
+      Handler: run.sh
       CodeUri: .
+      Layers:
+        # Official AWS Lambda Web Adapter layer — Arm64 build, matching
+        # Architectures: [arm64] above. Using the X86 build here would
+        # fail at cold start, not just underperform — architecture must
+        # match exactly.
+        - !Sub arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerArm64:28
       Timeout: 210
       AutoPublishAlias: prod
       DeploymentPreference:
@@ -120,7 +355,9 @@ Resources:
         Variables:
           KNOWLEDGE_BASE_ID: !Ref KnowledgeBaseId
           KNOWLEDGE_BASE_REGION: !Ref KnowledgeBaseRegion
+          BEDROCK_REGION: !Ref BedrockRegion
           IMAGE_PROVIDER: !Ref ImageProvider
+          FREEPIK_API_KEY: !Ref FreepikApiKey
           FREEPIK_MODEL: !Ref FreepikModel
           FREEPIK_FILTER_NSFW: !Ref FreepikFilterNsfw
           FREEPIK_MAX_CONCURRENT_SUBMISSIONS: !Ref FreepikMaxConcurrentSubmissions
@@ -135,7 +372,8 @@ Resources:
               Action:
                 - bedrock:InvokeModel
                 - bedrock:Converse
-              Resource: "*"
+              Resource:
+                - !Sub "arn:${AWS::Partition}:bedrock:${BedrockRegion}::foundation-model/*"
             - Effect: Allow
               Action:
                 - bedrock:Retrieve
@@ -145,29 +383,40 @@ Resources:
                 - s3:PutObject
                 - s3:GetObject
               Resource: !Sub "${GeneratedImagesBucket.Arn}/*"
-      Events:
-        ApiEvent:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref AssetGenerationApi
-            Path: /{proxy+}
-            Method: ANY
-        RootEvent:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref AssetGenerationApi
-            Path: /
-            Method: GET
+      # No Events: block — every route (including the two streaming
+      # ones) is defined in ContentGenerationRestApi's DefinitionBody
+      # above, along with the invoke permission
+      # (ContentGenerationApiInvokePermission) SAM would otherwise have
+      # auto-generated from Events. See that resource's comments for why.
+
 
 Outputs:
   ApiUrl:
-    Description: Invoke URL for the Asset Generation API
-    Value: !Sub "https://${AssetGenerationApi}.execute-api.${AWS::Region}.amazonaws.com"
+    Description: >
+      Invoke URL for the Content Generation API. Note the /Prod suffix
+      — REST APIs (unlike the HttpApi this used to be) require the
+      stage name in the URL. All routes are under this ONE URL,
+      including the two streaming ones below — there is no separate
+      Function URL or second API in this design.
+    Value: !Sub "https://${ContentGenerationRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod"
+  StreamingRoutesNote:
+    Description: >
+      POST {ApiUrl}/api/generate/stream and
+      POST {ApiUrl}/api/regenerate-image/stream use
+      ResponseTransferMode: STREAM with a 200s integration timeout
+      (vs. the normal ~29s on every other route) — same ApiUrl host,
+      no separate URL to call. Verify with, e.g.:
+      curl -N -X POST {ApiUrl}/api/generate/stream -H "Content-Type: application/json" -d '{...}'
+      and confirm the connection stays open and delivers events past 29s.
+    Value: "See description — informational only, not a resource attribute."
   FunctionArn:
-    Value: !GetAtt AssetGenerationFunction.Arn
+    Value: !GetAtt ContentGenerationFunction.Arn
   FunctionName:
-    Value: !Ref AssetGenerationFunction
+    Description: The Lambda function's actual name in AWS
+    Value: !Ref ContentGenerationFunction
   ProdAliasArn:
-    Value: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${AssetGenerationFunction}:prod"
+    Description: The stable "prod" alias ARN.
+    Value: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${ContentGenerationFunction}:prod"
   GeneratedImagesBucketName:
+    Description: S3 bucket storing generated images
     Value: !Ref GeneratedImagesBucket

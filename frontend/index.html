@@ -226,7 +226,7 @@ h1 {
       </div>
       <div class="field">
         <label for="topic">Topic / Prompt</label>
-        <textarea id="topic" placeholder="Describe what you want generated, e.g. 'Heat Safety Awareness for warehouse workers during summer months'"></textarea>
+        <textarea id="topic" placeholder="Enter your topic or prompt"></textarea>
       </div>
 
       <div class="image-settings-row" id="imageSettingsRow">
@@ -274,7 +274,20 @@ h1 {
 </div>
 
 <script>
-const API = "";
+// Computed from the page's own URL rather than hardcoded, so this
+// works correctly whether the app is served at the root (HttpApi, or
+// local `uvicorn --reload`) or under a mandatory REST API stage prefix
+// like "/Prod" (API Gateway v1 requires the stage name in every URL —
+// unlike HttpApi's $default stage). The frontend and the API it calls
+// are always served from the exact same base path (same Lambda, same
+// origin), so deriving this from window.location.pathname instead of
+// assuming "" (root) is what actually keeps this correct after the
+// HttpApi -> REST API migration, and if the stage name ever changes
+// again later.
+//   "/"              -> ""
+//   "/Prod/"         -> "/Prod"
+//   "/Prod/index.html" -> "/Prod"
+const API = window.location.pathname.replace(/\/[^/]*$/, "");
 
 async function api(path, options = {}) {
   const headers = Object.assign({}, options.headers || {});
@@ -525,7 +538,7 @@ async function generateContentStreaming(contentType, topic, generateImages, stat
   setStatus(statusEl, "Checking your prompt…", false);
   let checkResult;
   try {
-    const checkRes = await fetch("/api/check-topic", {
+    const checkRes = await fetch(API + "/api/check-topic", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ prompt: topic }),
@@ -610,7 +623,7 @@ async function generateContentStreaming(contentType, topic, generateImages, stat
   document.getElementById("contentText").innerHTML = "";
 
   try {
-    const res = await fetch("/api/generate/stream", {
+    const res = await fetch(API + "/api/generate/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(Object.assign({
