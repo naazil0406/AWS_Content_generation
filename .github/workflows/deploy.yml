@@ -29,7 +29,21 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    environment: production # optional: gate this with a GitHub Environment + required reviewers
+    # NOTE: no "environment:" key here — this used to say
+    # "environment: production". Declaring a GitHub Environment on a job
+    # changes the OIDC token's "sub" claim from
+    # repo:{org}/{repo}:ref:refs/heads/{branch} to
+    # repo:{org}/{repo}:environment:{name} — a completely different
+    # string. The IAM trust policy (iam/github-actions-oidc.yaml) only
+    # allows the branch-based form, so with "environment: production"
+    # present, EVERY run failed at "Configure AWS credentials" with
+    # "Not authorized to perform sts:AssumeRoleWithWebIdentity" —
+    # regardless of which branch was actually pushed. If you want the
+    # approval-gating a GitHub Environment provides later, add it back
+    # AND update the trust policy's StringLike condition to
+    # "repo:${GitHubOrg}/${GitHubRepo}:environment:production" instead
+    # of the ref:refs/heads/main form — the two are mutually exclusive,
+    # not additive.
     steps:
       - name: Checkout
         uses: actions/checkout@v4
