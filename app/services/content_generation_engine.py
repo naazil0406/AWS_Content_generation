@@ -235,10 +235,18 @@ class ContentGenerationEngine:
         #      whose contextual hints (objects/roles/hazards) actually
         #      appear in the topic, so the random pick is topic-relevant
         #      rather than arbitrary — see prompt_builder.py.
+        _explicit_from_topic = detect_explicit_industry(topic)
         selected_industry = (
             industry
-            or detect_explicit_industry(topic)
+            or _explicit_from_topic
             or pick_industry(topic=topic, avoid=previous_industry)
+        )
+        logger.info(
+            "industry_resolved=%r source=%s topic=%r previous_industry=%r",
+            selected_industry,
+            "caller" if industry else ("topic" if _explicit_from_topic else "random"),
+            topic,
+            previous_industry,
         )
 
         use_combined = (

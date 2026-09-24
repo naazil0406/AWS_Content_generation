@@ -572,19 +572,16 @@ async function generateContentStreaming(contentType, topic, generateImages, stat
 
   let approvedTopic = null;
   if (checkResult.match_type === "similar") {
-    // Native confirm() as a pragmatic first version of the required
-    // "[Yes, Generate] [No, Cancel]" approval — functional, not fancy;
-    // swap for a styled in-page modal later if desired without changing
-    // any of the logic around it.
-    const approved = window.confirm(checkResult.message);
-    if (!approved) {
-      setStatus(statusEl, "Cancelled — no content was generated.", false);
-      const cancelErr = new Error("Cancelled — no content was generated.");
-      cancelErr.earlyFailure = false;
-      cancelErr.isValidationError = true; // same reasoning as stopErr above
-      cancelErr.userCancelled = true;
-      throw cancelErr;
-    }
+    // Previously blocked here with window.confirm(checkResult.message)
+    // asking the user to approve generating on the suggested related
+    // topic instead of their literal prompt. Now auto-approved
+    // silently — checkResult.matched_topic is used without a popup.
+    // The banner naming the substituted topic (see
+    // stream_warnings/approved_alternative_topic handling below and in
+    // app/routes/content.py) still shows up with the generated
+    // content, so the user isn't left unaware a substitution happened
+    // — they just aren't interrupted with a click before generation
+    // starts.
     approvedTopic = checkResult.matched_topic;
   }
 

@@ -694,7 +694,18 @@ def pick_industry(topic: str = "", avoid: Optional[str] = None) -> str:
         if hinted:
             relevant = tuple(hinted)
     choices = [i for i in relevant if i != avoid] or [i for i in industries if i != avoid] or list(industries)
-    return random.choice(choices)
+    # random.SystemRandom() pulls straight from the OS's CSPRNG
+    # (os.urandom under the hood) rather than Python's shared,
+    # module-level random.Random() instance. Functionally this was
+    # already safe — that shared instance auto-seeds from OS entropy
+    # at interpreter start and is never reseeded with a constant
+    # anywhere in this codebase — but using SystemRandom() here removes
+    # even the possibility of any *other* code path (this app's or a
+    # dependency's) having called random.seed(...) earlier in the same
+    # warm container and affecting this draw. A fresh SystemRandom()
+    # instance is created on every call — nothing about it persists
+    # between requests either.
+    return random.SystemRandom().choice(choices)
 
 
 def negative_prompt_for_mode(mode: str) -> str:
